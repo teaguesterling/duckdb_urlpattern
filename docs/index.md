@@ -42,7 +42,7 @@ SELECT urlpattern_extract(
 | **Group Extraction** | Extract named groups with `urlpattern_extract()` |
 | **Component Accessors** | Get pattern components like pathname, hostname, etc. |
 | **WHATWG Compliant** | Follows the official URLPattern specification |
-| **High Performance** | Uses RE2 regex engine for efficient matching |
+| **High Performance** | RE2 regex engine with pattern caching (~320k matches/sec) |
 
 ## Use Cases
 

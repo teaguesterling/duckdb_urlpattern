@@ -1,9 +1,9 @@
 site_name: DuckDB URLPattern Extension
 site_description: WHATWG URLPattern API for DuckDB
-site_url: https://github.com/your-username/duckdb_urlpattern
+site_url: https://teaguesterling.github.io/duckdb_urlpattern
 
 repo_name: duckdb_urlpattern
-repo_url: https://github.com/your-username/duckdb_urlpattern
+repo_url: https://github.com/teaguesterling/duckdb_urlpattern
 
 theme:
   name: material
