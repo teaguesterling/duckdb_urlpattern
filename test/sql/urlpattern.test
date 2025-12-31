@@ -1,0 +1,245 @@
+# name: test/sql/urlpattern.test
+# description: test urlpattern extension
+# group: [urlpattern]
+
+# Require statement will ensure this test is run with this extension loaded
+require urlpattern
+
+#------------------------------------------------------------------------------
+# urlpattern_test - Basic pattern matching
+#------------------------------------------------------------------------------
+
+# Wildcard match
+query I
+SELECT urlpattern_test('https://example.com/*', 'https://example.com/test');
+----
+true
+
+# Exact non-match
+query I
+SELECT urlpattern_test('https://example.com/foo', 'https://example.com/bar');
+----
+false
+
+# Named group pattern match
+query I
+SELECT urlpattern_test('https://example.com/users/:id', 'https://example.com/users/123');
+----
+true
+
+# Named group non-match (wrong path)
+query I
+SELECT urlpattern_test('https://example.com/users/:id', 'https://example.com/posts/123');
+----
+false
+
+# Wildcard in pathname
+query I
+SELECT urlpattern_test('https://example.com/api/*', 'https://example.com/api/v1/users');
+----
+true
+
+# Multiple path segments with wildcards
+query I
+SELECT urlpattern_test('https://example.com/api/*/users/*', 'https://example.com/api/v1/users/123');
+----
+true
+
+# Protocol mismatch
+query I
+SELECT urlpattern_test('https://example.com/*', 'http://example.com/test');
+----
+false
+
+# Hostname mismatch
+query I
+SELECT urlpattern_test('https://example.com/*', 'https://other.com/test');
+----
+false
+
+# Wildcard hostname
+query I
+SELECT urlpattern_test('https://*.example.com/*', 'https://api.example.com/test');
+----
+true
+
+#------------------------------------------------------------------------------
+# urlpattern_extract - Named group extraction
+#------------------------------------------------------------------------------
+
+# Extract single named group
+query I
+SELECT urlpattern_extract('https://example.com/users/:id', 'https://example.com/users/123', 'id');
+----
+123
+
+# Multiple groups - extract version
+query I
+SELECT urlpattern_extract('https://example.com/api/:version/:resource', 'https://example.com/api/v1/users', 'version');
+----
+v1
+
+# Multiple groups - extract resource
+query I
+SELECT urlpattern_extract('https://example.com/api/:version/:resource', 'https://example.com/api/v1/users', 'resource');
+----
+users
+
+# Extract from hostname pattern
+query I
+SELECT urlpattern_extract('https://:subdomain.example.com/users/:id', 'https://api.example.com/users/456', 'id');
+----
+456
+
+query I
+SELECT urlpattern_extract('https://:subdomain.example.com/users/:id', 'https://api.example.com/users/456', 'subdomain');
+----
+api
+
+#------------------------------------------------------------------------------
+# urlpattern_pathname - Get pathname component of pattern
+#------------------------------------------------------------------------------
+
+query I
+SELECT urlpattern_pathname('https://example.com/api/:version/*');
+----
+/api/:version/*
+
+query I
+SELECT urlpattern_pathname('https://example.com/users/:id');
+----
+/users/:id
+
+query I
+SELECT urlpattern_pathname('https://example.com/*');
+----
+/*
+
+#------------------------------------------------------------------------------
+# urlpattern_protocol - Get protocol component of pattern
+#------------------------------------------------------------------------------
+
+query I
+SELECT urlpattern_protocol('https://example.com/*');
+----
+https
+
+query I
+SELECT urlpattern_protocol('http://example.com/*');
+----
+http
+
+#------------------------------------------------------------------------------
+# urlpattern_hostname - Get hostname component of pattern
+#------------------------------------------------------------------------------
+
+query I
+SELECT urlpattern_hostname('https://example.com/*');
+----
+example.com
+
+query I
+SELECT urlpattern_hostname('https://*.example.com/*');
+----
+*.example.com
+
+query I
+SELECT urlpattern_hostname('https://:subdomain.example.com/*');
+----
+:subdomain.example.com
+
+#------------------------------------------------------------------------------
+# urlpattern_port - Get port component of pattern
+#------------------------------------------------------------------------------
+
+query I
+SELECT urlpattern_port('https://example.com:8080/*');
+----
+8080
+
+query I
+SELECT urlpattern_port('https://example.com:3000/api/*');
+----
+3000
+
+#------------------------------------------------------------------------------
+# urlpattern_search - Get search/query component of pattern
+#------------------------------------------------------------------------------
+
+query I
+SELECT urlpattern_search('https://example.com/*?*');
+----
+*
+
+#------------------------------------------------------------------------------
+# urlpattern_hash - Get hash/fragment component of pattern
+#------------------------------------------------------------------------------
+
+query I
+SELECT urlpattern_hash('https://example.com/*#*');
+----
+*
+
+query I
+SELECT urlpattern_hash('https://example.com/path#section');
+----
+section
+
+#------------------------------------------------------------------------------
+# urlpattern_exec - Full pattern execution with STRUCT result
+#------------------------------------------------------------------------------
+
+# Basic match with single group
+query I
+SELECT (urlpattern_exec('https://example.com/users/:id', 'https://example.com/users/123')).matched;
+----
+true
+
+query I
+SELECT (urlpattern_exec('https://example.com/users/:id', 'https://example.com/users/123')).pathname;
+----
+/users/123
+
+query I
+SELECT (urlpattern_exec('https://example.com/users/:id', 'https://example.com/users/123')).groups['id'];
+----
+123
+
+# Multiple groups extraction
+query I
+SELECT (urlpattern_exec('https://example.com/api/:version/:resource/:id', 'https://example.com/api/v1/users/123')).groups['version'];
+----
+v1
+
+query I
+SELECT (urlpattern_exec('https://example.com/api/:version/:resource/:id', 'https://example.com/api/v1/users/123')).groups['resource'];
+----
+users
+
+# Non-matching URL returns matched=false
+query I
+SELECT (urlpattern_exec('https://example.com/users/:id', 'https://example.com/posts/123')).matched;
+----
+false
+
+# Groups from different URL components (hostname and pathname)
+query I
+SELECT (urlpattern_exec('https://:tenant.example.com/users/:id', 'https://acme.example.com/users/456')).groups['tenant'];
+----
+acme
+
+query I
+SELECT (urlpattern_exec('https://:tenant.example.com/users/:id', 'https://acme.example.com/users/456')).groups['id'];
+----
+456
+
+# NULL handling
+query I
+SELECT urlpattern_exec(NULL, 'https://example.com/users/123') IS NULL;
+----
+true
+
+query I
+SELECT urlpattern_exec('https://example.com/users/:id', NULL) IS NULL;
+----
+true

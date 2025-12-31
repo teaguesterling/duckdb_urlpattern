@@ -1,0 +1,45 @@
+site_name: DuckDB URLPattern Extension
+site_description: WHATWG URLPattern API for DuckDB
+site_url: https://github.com/your-username/duckdb_urlpattern
+
+repo_name: duckdb_urlpattern
+repo_url: https://github.com/your-username/duckdb_urlpattern
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: amber
+      accent: orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: amber
+      accent: orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Pattern Syntax: pattern-syntax.md
+  - API Reference: api-reference.md
+  - Examples: examples.md

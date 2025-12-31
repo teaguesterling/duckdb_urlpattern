@@ -1,13 +1,13 @@
 {
-        "dependencies": [
-                "openssl"
+    "dependencies": [
+        "ada-url"
+    ],
+    "vcpkg-configuration": {
+        "overlay-ports": [
+            "./extension-ci-tools/vcpkg_ports"
         ],
-        "vcpkg-configuration": {
-                "overlay-ports": [
-                        "./extension-ci-tools/vcpkg_ports"
-                ],
-                "overlay-triplets": [
-                        "./extension-ci-tools/toolchains"
-                ]
-        }
+        "overlay-triplets": [
+            "./extension-ci-tools/toolchains"
+        ]
+    }
 }
