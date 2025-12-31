@@ -21,6 +21,45 @@ namespace duckdb {
 using URLPatternType = ada::url_pattern<DuckDBRe2RegexProvider>;
 
 //------------------------------------------------------------------------------
+// Pattern Cache - Local state for caching compiled patterns
+//------------------------------------------------------------------------------
+struct URLPatternLocalState : public FunctionLocalState {
+    // Cache of compiled patterns keyed by pattern string
+    unordered_map<string, shared_ptr<URLPatternType>> cache;
+
+    // Get or create a compiled pattern
+    shared_ptr<URLPatternType> GetPattern(const string_t &pattern_str) {
+        string key(pattern_str.GetData(), pattern_str.GetSize());
+
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            return it->second;
+        }
+
+        // Parse and cache the pattern
+        auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
+            std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
+            nullptr,
+            nullptr
+        );
+
+        if (!pattern_result) {
+            throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
+        }
+
+        auto pattern_ptr = make_shared_ptr<URLPatternType>(std::move(pattern_result.value()));
+        cache[key] = pattern_ptr;
+        return pattern_ptr;
+    }
+};
+
+static unique_ptr<FunctionLocalState> InitURLPatternLocalState(ExpressionState &state,
+                                                                const BoundFunctionExpression &expr,
+                                                                FunctionData *bind_data) {
+    return make_uniq<URLPatternLocalState>();
+}
+
+//------------------------------------------------------------------------------
 // URLPATTERN Type Definition
 //------------------------------------------------------------------------------
 static constexpr const char *URLPATTERN_TYPE_NAME = "URLPATTERN";
@@ -94,23 +133,18 @@ static void UrlpatternTestFunction(DataChunk &args, ExpressionState &state, Vect
     auto &pattern_vector = args.data[0];
     auto &url_vector = args.data[1];
 
+    // Get the local state with pattern cache
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
+
     BinaryExecutor::Execute<string_t, string_t, bool>(
         pattern_vector, url_vector, result, args.size(),
         [&](string_t pattern_str, string_t url_str) {
-            // Parse the pattern
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
+            // Get cached pattern (or parse and cache if not found)
+            auto pattern = local_state.GetPattern(pattern_str);
 
             // Test the URL against the pattern
             std::string url(url_str.GetData(), url_str.GetSize());
-            auto test_result = pattern_result->test(url, nullptr);
+            auto test_result = pattern->test(url, nullptr);
 
             if (!test_result) {
                 throw InvalidInputException("URL pattern test failed");
@@ -129,23 +163,18 @@ static void UrlpatternExtractFunction(DataChunk &args, ExpressionState &state, V
     auto &url_vector = args.data[1];
     auto &group_vector = args.data[2];
 
+    // Get the local state with pattern cache
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
+
     TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
         pattern_vector, url_vector, group_vector, result, args.size(),
         [&](string_t pattern_str, string_t url_str, string_t group_str) {
-            // Parse the pattern
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
+            // Get cached pattern (or parse and cache if not found)
+            auto pattern = local_state.GetPattern(pattern_str);
 
             // Execute the pattern against the URL
             std::string url(url_str.GetData(), url_str.GetSize());
-            auto exec_result = pattern_result->exec(url, nullptr);
+            auto exec_result = pattern->exec(url, nullptr);
 
             // exec returns tl::expected<std::optional<url_pattern_result>, errors>
             if (!exec_result.has_value()) {
@@ -204,21 +233,13 @@ static void UrlpatternExtractFunction(DataChunk &args, ExpressionState &state, V
 //------------------------------------------------------------------------------
 static void UrlpatternPathnameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &pattern_vector = args.data[0];
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
     UnaryExecutor::Execute<string_t, string_t>(
         pattern_vector, result, args.size(),
         [&](string_t pattern_str) {
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
-
-            auto sv = pattern_result->get_pathname();
+            auto pattern = local_state.GetPattern(pattern_str);
+            auto sv = pattern->get_pathname();
             return StringVector::AddString(result, sv.data(), sv.size());
         }
     );
@@ -229,21 +250,13 @@ static void UrlpatternPathnameFunction(DataChunk &args, ExpressionState &state, 
 //------------------------------------------------------------------------------
 static void UrlpatternProtocolFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &pattern_vector = args.data[0];
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
     UnaryExecutor::Execute<string_t, string_t>(
         pattern_vector, result, args.size(),
         [&](string_t pattern_str) {
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
-
-            auto sv = pattern_result->get_protocol();
+            auto pattern = local_state.GetPattern(pattern_str);
+            auto sv = pattern->get_protocol();
             return StringVector::AddString(result, sv.data(), sv.size());
         }
     );
@@ -254,21 +267,13 @@ static void UrlpatternProtocolFunction(DataChunk &args, ExpressionState &state, 
 //------------------------------------------------------------------------------
 static void UrlpatternHostnameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &pattern_vector = args.data[0];
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
     UnaryExecutor::Execute<string_t, string_t>(
         pattern_vector, result, args.size(),
         [&](string_t pattern_str) {
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
-
-            auto sv = pattern_result->get_hostname();
+            auto pattern = local_state.GetPattern(pattern_str);
+            auto sv = pattern->get_hostname();
             return StringVector::AddString(result, sv.data(), sv.size());
         }
     );
@@ -279,21 +284,13 @@ static void UrlpatternHostnameFunction(DataChunk &args, ExpressionState &state, 
 //------------------------------------------------------------------------------
 static void UrlpatternPortFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &pattern_vector = args.data[0];
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
     UnaryExecutor::Execute<string_t, string_t>(
         pattern_vector, result, args.size(),
         [&](string_t pattern_str) {
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
-
-            auto sv = pattern_result->get_port();
+            auto pattern = local_state.GetPattern(pattern_str);
+            auto sv = pattern->get_port();
             return StringVector::AddString(result, sv.data(), sv.size());
         }
     );
@@ -304,21 +301,13 @@ static void UrlpatternPortFunction(DataChunk &args, ExpressionState &state, Vect
 //------------------------------------------------------------------------------
 static void UrlpatternSearchFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &pattern_vector = args.data[0];
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
     UnaryExecutor::Execute<string_t, string_t>(
         pattern_vector, result, args.size(),
         [&](string_t pattern_str) {
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
-
-            auto sv = pattern_result->get_search();
+            auto pattern = local_state.GetPattern(pattern_str);
+            auto sv = pattern->get_search();
             return StringVector::AddString(result, sv.data(), sv.size());
         }
     );
@@ -329,21 +318,13 @@ static void UrlpatternSearchFunction(DataChunk &args, ExpressionState &state, Ve
 //------------------------------------------------------------------------------
 static void UrlpatternHashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &pattern_vector = args.data[0];
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
     UnaryExecutor::Execute<string_t, string_t>(
         pattern_vector, result, args.size(),
         [&](string_t pattern_str) {
-            auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-                std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-                nullptr,  // no base URL
-                nullptr   // no options
-            );
-
-            if (!pattern_result) {
-                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-            }
-
-            auto sv = pattern_result->get_hash();
+            auto pattern = local_state.GetPattern(pattern_str);
+            auto sv = pattern->get_hash();
             return StringVector::AddString(result, sv.data(), sv.size());
         }
     );
@@ -378,6 +359,9 @@ static void UrlpatternExecFunction(DataChunk &args, ExpressionState &state, Vect
     auto &pattern_vector = args.data[0];
     auto &url_vector = args.data[1];
 
+    // Get the local state with pattern cache
+    auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
+
     auto &child_entries = StructVector::GetEntries(result);
     auto &matched_vec = *child_entries[0];      // BOOLEAN
     auto &protocol_vec = *child_entries[1];     // VARCHAR
@@ -409,20 +393,12 @@ static void UrlpatternExecFunction(DataChunk &args, ExpressionState &state, Vect
         auto pattern_str = patterns[pattern_idx];
         auto url_str = urls[url_idx];
 
-        // Parse the pattern
-        auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-            std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
-            nullptr,
-            nullptr
-        );
-
-        if (!pattern_result) {
-            throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
-        }
+        // Get cached pattern (or parse and cache if not found)
+        auto pattern = local_state.GetPattern(pattern_str);
 
         // Execute the pattern against the URL
         std::string url(url_str.GetData(), url_str.GetSize());
-        auto exec_result = pattern_result->exec(url, nullptr);
+        auto exec_result = pattern->exec(url, nullptr);
 
         if (!exec_result.has_value()) {
             throw InvalidInputException("URL pattern exec failed");
@@ -521,6 +497,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::BOOLEAN,
         UrlpatternTestFunction
     );
+    urlpattern_test_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_test_func);
 
     // Register urlpattern_extract function (accepts URLPATTERN)
@@ -530,6 +507,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::VARCHAR,
         UrlpatternExtractFunction
     );
+    urlpattern_extract_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_extract_func);
 
     // Register accessor functions (accept URLPATTERN)
@@ -539,6 +517,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::VARCHAR,
         UrlpatternPathnameFunction
     );
+    urlpattern_pathname_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_pathname_func);
 
     auto urlpattern_protocol_func = ScalarFunction(
@@ -547,6 +526,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::VARCHAR,
         UrlpatternProtocolFunction
     );
+    urlpattern_protocol_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_protocol_func);
 
     auto urlpattern_hostname_func = ScalarFunction(
@@ -555,6 +535,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::VARCHAR,
         UrlpatternHostnameFunction
     );
+    urlpattern_hostname_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_hostname_func);
 
     auto urlpattern_port_func = ScalarFunction(
@@ -563,6 +544,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::VARCHAR,
         UrlpatternPortFunction
     );
+    urlpattern_port_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_port_func);
 
     auto urlpattern_search_func = ScalarFunction(
@@ -571,6 +553,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::VARCHAR,
         UrlpatternSearchFunction
     );
+    urlpattern_search_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_search_func);
 
     auto urlpattern_hash_func = ScalarFunction(
@@ -579,6 +562,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::VARCHAR,
         UrlpatternHashFunction
     );
+    urlpattern_hash_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_hash_func);
 
     // Register urlpattern_exec function (accepts URLPATTERN)
@@ -588,6 +572,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         GetUrlpatternExecReturnType(),
         UrlpatternExecFunction
     );
+    urlpattern_exec_func.init_local_state = InitURLPatternLocalState;
     loader.RegisterFunction(urlpattern_exec_func);
 }
 
