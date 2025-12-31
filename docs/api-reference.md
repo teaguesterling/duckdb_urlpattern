@@ -1,6 +1,55 @@
 # API Reference
 
-Complete reference for all functions provided by the URLPattern extension.
+Complete reference for all types and functions provided by the URLPattern extension.
+
+## URLPATTERN Type
+
+The extension provides a custom `URLPATTERN` type for storing and working with URL patterns.
+
+### Creating URLPATTERNs
+
+**Constructor:**
+```sql
+urlpattern(pattern VARCHAR) → URLPATTERN
+```
+
+Creates a validated URLPATTERN from a string. Throws an error if the pattern is invalid.
+
+```sql
+-- Create a URLPATTERN explicitly
+SELECT urlpattern('https://example.com/users/:id');
+
+-- Use in table definitions
+CREATE TABLE routes (
+    name VARCHAR,
+    pattern URLPATTERN
+);
+
+INSERT INTO routes VALUES
+    ('users', 'https://example.com/users/:id'),
+    ('posts', 'https://example.com/posts/:slug');
+```
+
+### Implicit Casting
+
+VARCHAR strings are automatically cast to URLPATTERN when passed to functions expecting the type:
+
+```sql
+-- Both of these work:
+SELECT urlpattern_test(urlpattern('https://example.com/*'), 'https://example.com/test');
+SELECT urlpattern_test('https://example.com/*', 'https://example.com/test');
+```
+
+The implicit cast validates the pattern - invalid patterns will throw an error.
+
+### Type Checking
+
+```sql
+SELECT typeof(urlpattern('https://example.com/*'));
+-- Returns: URLPATTERN
+```
+
+---
 
 ## Pattern Matching
 
@@ -10,14 +59,14 @@ Tests whether a URL matches a pattern.
 
 **Signature:**
 ```sql
-urlpattern_test(pattern VARCHAR, url VARCHAR) → BOOLEAN
+urlpattern_test(pattern URLPATTERN, url VARCHAR) → BOOLEAN
 ```
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | VARCHAR | The URLPattern to match against |
+| `pattern` | URLPATTERN | The URLPattern to match against (VARCHAR is implicitly cast) |
 | `url` | VARCHAR | The URL to test |
 
 **Returns:** `BOOLEAN` - `true` if the URL matches the pattern, `false` otherwise.
@@ -58,14 +107,14 @@ Executes a pattern against a URL and returns complete match information includin
 
 **Signature:**
 ```sql
-urlpattern_exec(pattern VARCHAR, url VARCHAR) → STRUCT
+urlpattern_exec(pattern URLPATTERN, url VARCHAR) → STRUCT
 ```
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | VARCHAR | The URLPattern to match against |
+| `pattern` | URLPATTERN | The URLPattern to match against (VARCHAR is implicitly cast) |
 | `url` | VARCHAR | The URL to test |
 
 **Returns:** A `STRUCT` with the following fields:
@@ -139,14 +188,14 @@ Extracts a named group's value from a URL that matches a pattern.
 
 **Signature:**
 ```sql
-urlpattern_extract(pattern VARCHAR, url VARCHAR, group_name VARCHAR) → VARCHAR
+urlpattern_extract(pattern URLPATTERN, url VARCHAR, group_name VARCHAR) → VARCHAR
 ```
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pattern` | VARCHAR | The URLPattern containing named groups |
+| `pattern` | URLPATTERN | The URLPattern containing named groups (VARCHAR is implicitly cast) |
 | `url` | VARCHAR | The URL to extract from |
 | `group_name` | VARCHAR | The name of the group to extract |
 
@@ -198,7 +247,7 @@ Returns the pathname component of a pattern.
 
 **Signature:**
 ```sql
-urlpattern_pathname(pattern VARCHAR) → VARCHAR
+urlpattern_pathname(pattern URLPATTERN) → VARCHAR
 ```
 
 **Example:**
@@ -215,7 +264,7 @@ Returns the protocol component of a pattern.
 
 **Signature:**
 ```sql
-urlpattern_protocol(pattern VARCHAR) → VARCHAR
+urlpattern_protocol(pattern URLPATTERN) → VARCHAR
 ```
 
 **Example:**
@@ -232,7 +281,7 @@ Returns the hostname component of a pattern.
 
 **Signature:**
 ```sql
-urlpattern_hostname(pattern VARCHAR) → VARCHAR
+urlpattern_hostname(pattern URLPATTERN) → VARCHAR
 ```
 
 **Example:**
@@ -249,7 +298,7 @@ Returns the port component of a pattern.
 
 **Signature:**
 ```sql
-urlpattern_port(pattern VARCHAR) → VARCHAR
+urlpattern_port(pattern URLPATTERN) → VARCHAR
 ```
 
 **Example:**
@@ -270,7 +319,7 @@ Returns the search (query string) component of a pattern.
 
 **Signature:**
 ```sql
-urlpattern_search(pattern VARCHAR) → VARCHAR
+urlpattern_search(pattern URLPATTERN) → VARCHAR
 ```
 
 **Example:**
@@ -287,7 +336,7 @@ Returns the hash (fragment) component of a pattern.
 
 **Signature:**
 ```sql
-urlpattern_hash(pattern VARCHAR) → VARCHAR
+urlpattern_hash(pattern URLPATTERN) → VARCHAR
 ```
 
 **Example:**
@@ -312,6 +361,7 @@ SELECT urlpattern_test('https://[invalid', 'https://example.com');
 
 | Function | Purpose | Return Type |
 |----------|---------|-------------|
+| `urlpattern` | Create URLPATTERN from string | URLPATTERN |
 | `urlpattern_test` | Test if URL matches pattern | BOOLEAN |
 | `urlpattern_exec` | Execute pattern and return full match info | STRUCT |
 | `urlpattern_extract` | Extract named group value | VARCHAR |

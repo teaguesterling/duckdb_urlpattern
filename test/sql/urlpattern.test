@@ -243,3 +243,72 @@ query I
 SELECT urlpattern_exec('https://example.com/users/:id', NULL) IS NULL;
 ----
 true
+
+#------------------------------------------------------------------------------
+# URLPATTERN Type - Custom type functionality
+#------------------------------------------------------------------------------
+
+# urlpattern() constructor creates URLPATTERN type
+query I
+SELECT typeof(urlpattern('https://example.com/*'));
+----
+URLPATTERN
+
+# Explicit URLPATTERN type works with functions
+query I
+SELECT urlpattern_test(urlpattern('https://example.com/users/:id'), 'https://example.com/users/123');
+----
+true
+
+# Implicit cast from VARCHAR to URLPATTERN
+query I
+SELECT urlpattern_test('https://example.com/users/:id', 'https://example.com/users/456');
+----
+true
+
+# URLPATTERN can be stored in tables
+statement ok
+CREATE TABLE test_patterns (name VARCHAR, pattern URLPATTERN);
+
+statement ok
+INSERT INTO test_patterns VALUES ('users', 'https://example.com/users/:id');
+
+statement ok
+INSERT INTO test_patterns VALUES ('posts', 'https://example.com/posts/:slug');
+
+query II
+SELECT name, pattern FROM test_patterns ORDER BY name;
+----
+posts	https://example.com/posts/:slug
+users	https://example.com/users/:id
+
+# Pattern matching using patterns from table
+query III
+SELECT name, pattern, urlpattern_test(pattern, 'https://example.com/users/123') as matches
+FROM test_patterns ORDER BY name;
+----
+posts	https://example.com/posts/:slug	false
+users	https://example.com/users/:id	true
+
+# Extract using pattern from table
+query I
+SELECT urlpattern_extract(pattern, 'https://example.com/users/789', 'id')
+FROM test_patterns WHERE name = 'users';
+----
+789
+
+# Clean up
+statement ok
+DROP TABLE test_patterns;
+
+# Invalid pattern in constructor throws error
+statement error
+SELECT urlpattern('https://[invalid');
+----
+Invalid URL pattern
+
+# Invalid pattern in implicit cast throws error
+statement error
+SELECT urlpattern_test('https://[invalid', 'https://example.com');
+----
+Invalid URL pattern

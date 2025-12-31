@@ -36,6 +36,7 @@ SELECT urlpattern_extract(
 
 | Feature | Description |
 |---------|-------------|
+| **URLPATTERN Type** | Custom type for storing and validating URL patterns |
 | **Pattern Matching** | Test URLs against patterns with `urlpattern_test()` |
 | **Full Execution** | Get complete match results with `urlpattern_exec()` |
 | **Group Extraction** | Extract named groups with `urlpattern_extract()` |
@@ -92,6 +93,26 @@ SELECT
     ) as tenant_id,
     url
 FROM requests;
+```
+
+### Storing Patterns in Tables
+
+Use the URLPATTERN type to store validated patterns:
+
+```sql
+CREATE TABLE routes (
+    name VARCHAR,
+    pattern URLPATTERN
+);
+
+INSERT INTO routes VALUES
+    ('users', 'https://api.example.com/users/:id'),
+    ('posts', 'https://api.example.com/posts/:slug');
+
+-- Find matching route for a URL
+SELECT name
+FROM routes
+WHERE urlpattern_test(pattern, 'https://api.example.com/users/123');
 ```
 
 ## Next Steps

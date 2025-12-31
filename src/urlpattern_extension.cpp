@@ -8,6 +8,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 
@@ -18,6 +19,72 @@ namespace duckdb {
 
 // Type alias for our URLPattern with DuckDB's RE2 provider
 using URLPatternType = ada::url_pattern<DuckDBRe2RegexProvider>;
+
+//------------------------------------------------------------------------------
+// URLPATTERN Type Definition
+//------------------------------------------------------------------------------
+static constexpr const char *URLPATTERN_TYPE_NAME = "URLPATTERN";
+
+// Create the URLPATTERN logical type (VARCHAR-backed with alias)
+static LogicalType UrlpatternType() {
+    auto type = LogicalType(LogicalTypeId::VARCHAR);
+    type.SetAlias(URLPATTERN_TYPE_NAME);
+    return type;
+}
+
+// Check if a type is URLPATTERN
+static bool IsUrlpatternType(const LogicalType &type) {
+    return type.id() == LogicalTypeId::VARCHAR &&
+           type.HasAlias() &&
+           type.GetAlias() == URLPATTERN_TYPE_NAME;
+}
+
+// Validate a pattern string - returns true if valid
+static bool ValidateUrlpattern(const string_t &pattern_str) {
+    auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
+        std::string_view(pattern_str.GetData(), pattern_str.GetSize()),
+        nullptr,
+        nullptr
+    );
+    return pattern_result.has_value();
+}
+
+//------------------------------------------------------------------------------
+// urlpattern(pattern VARCHAR) -> URLPATTERN
+// Constructor function that validates and creates a URLPATTERN
+//------------------------------------------------------------------------------
+static void UrlpatternConstructorFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &pattern_vector = args.data[0];
+
+    UnaryExecutor::Execute<string_t, string_t>(
+        pattern_vector, result, args.size(),
+        [&](string_t pattern_str) {
+            // Validate the pattern
+            if (!ValidateUrlpattern(pattern_str)) {
+                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
+            }
+            // Return the pattern string (the type is URLPATTERN due to function return type)
+            return StringVector::AddString(result, pattern_str);
+        }
+    );
+}
+
+//------------------------------------------------------------------------------
+// Cast function: VARCHAR -> URLPATTERN
+//------------------------------------------------------------------------------
+static bool CastVarcharToUrlpattern(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+    UnaryExecutor::Execute<string_t, string_t>(
+        source, result, count,
+        [&](string_t pattern_str) {
+            // Validate the pattern during cast
+            if (!ValidateUrlpattern(pattern_str)) {
+                throw InvalidInputException("Invalid URL pattern: %s", pattern_str.GetString());
+            }
+            return StringVector::AddString(result, pattern_str);
+        }
+    );
+    return true;
+}
 
 //------------------------------------------------------------------------------
 // urlpattern_test(pattern VARCHAR, url VARCHAR) -> BOOLEAN
@@ -428,28 +495,47 @@ static LogicalType GetUrlpatternExecReturnType() {
 // Extension loading
 //------------------------------------------------------------------------------
 static void LoadInternal(ExtensionLoader &loader) {
-    // Register urlpattern_test function
+    // Get the URLPATTERN type
+    auto urlpattern_type = UrlpatternType();
+
+    // Register the URLPATTERN type
+    loader.RegisterType(URLPATTERN_TYPE_NAME, urlpattern_type);
+
+    // Register VARCHAR -> URLPATTERN cast (implicit, with validation)
+    loader.RegisterCastFunction(LogicalType::VARCHAR, urlpattern_type,
+                                BoundCastInfo(CastVarcharToUrlpattern), 1);
+
+    // Register urlpattern() constructor function
+    auto urlpattern_constructor_func = ScalarFunction(
+        "urlpattern",
+        {LogicalType::VARCHAR},
+        urlpattern_type,
+        UrlpatternConstructorFunction
+    );
+    loader.RegisterFunction(urlpattern_constructor_func);
+
+    // Register urlpattern_test function (accepts URLPATTERN)
     auto urlpattern_test_func = ScalarFunction(
         "urlpattern_test",
-        {LogicalType::VARCHAR, LogicalType::VARCHAR},
+        {urlpattern_type, LogicalType::VARCHAR},
         LogicalType::BOOLEAN,
         UrlpatternTestFunction
     );
     loader.RegisterFunction(urlpattern_test_func);
 
-    // Register urlpattern_extract function
+    // Register urlpattern_extract function (accepts URLPATTERN)
     auto urlpattern_extract_func = ScalarFunction(
         "urlpattern_extract",
-        {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+        {urlpattern_type, LogicalType::VARCHAR, LogicalType::VARCHAR},
         LogicalType::VARCHAR,
         UrlpatternExtractFunction
     );
     loader.RegisterFunction(urlpattern_extract_func);
 
-    // Register accessor functions
+    // Register accessor functions (accept URLPATTERN)
     auto urlpattern_pathname_func = ScalarFunction(
         "urlpattern_pathname",
-        {LogicalType::VARCHAR},
+        {urlpattern_type},
         LogicalType::VARCHAR,
         UrlpatternPathnameFunction
     );
@@ -457,7 +543,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto urlpattern_protocol_func = ScalarFunction(
         "urlpattern_protocol",
-        {LogicalType::VARCHAR},
+        {urlpattern_type},
         LogicalType::VARCHAR,
         UrlpatternProtocolFunction
     );
@@ -465,7 +551,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto urlpattern_hostname_func = ScalarFunction(
         "urlpattern_hostname",
-        {LogicalType::VARCHAR},
+        {urlpattern_type},
         LogicalType::VARCHAR,
         UrlpatternHostnameFunction
     );
@@ -473,7 +559,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto urlpattern_port_func = ScalarFunction(
         "urlpattern_port",
-        {LogicalType::VARCHAR},
+        {urlpattern_type},
         LogicalType::VARCHAR,
         UrlpatternPortFunction
     );
@@ -481,7 +567,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto urlpattern_search_func = ScalarFunction(
         "urlpattern_search",
-        {LogicalType::VARCHAR},
+        {urlpattern_type},
         LogicalType::VARCHAR,
         UrlpatternSearchFunction
     );
@@ -489,16 +575,16 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto urlpattern_hash_func = ScalarFunction(
         "urlpattern_hash",
-        {LogicalType::VARCHAR},
+        {urlpattern_type},
         LogicalType::VARCHAR,
         UrlpatternHashFunction
     );
     loader.RegisterFunction(urlpattern_hash_func);
 
-    // Register urlpattern_exec function
+    // Register urlpattern_exec function (accepts URLPATTERN)
     auto urlpattern_exec_func = ScalarFunction(
         "urlpattern_exec",
-        {LogicalType::VARCHAR, LogicalType::VARCHAR},
+        {urlpattern_type, LogicalType::VARCHAR},
         GetUrlpatternExecReturnType(),
         UrlpatternExecFunction
     );
