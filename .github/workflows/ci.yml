@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Build Extension
+        run: |
+          GEN=ninja make release
+
+      - name: Run Tests
+        run: |
+          make test
+
+      - name: Upload Extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: urlpattern-linux-amd64
+          path: build/release/extension/urlpattern/urlpattern.duckdb_extension
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          brew install ninja
+
+      - name: Build Extension
+        run: |
+          GEN=ninja make release
+
+      - name: Run Tests
+        run: |
+          make test
+
+      - name: Upload Extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: urlpattern-macos
+          path: build/release/extension/urlpattern/urlpattern.duckdb_extension
+
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build Extension
+        shell: bash
+        run: |
+          make release
+
+      - name: Run Tests
+        shell: bash
+        run: |
+          make test
+
+      - name: Upload Extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: urlpattern-windows-amd64
+          path: build/release/extension/urlpattern/urlpattern.duckdb_extension
