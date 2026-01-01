@@ -20,8 +20,10 @@ jobs:
       ci_tools_version: main
       extension_name: urlpattern
       vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
-      # Exclude Windows (MinGW constexpr issue with ada-url)
-      exclude_archs: 'windows_amd64;windows_amd64_mingw'
+      # Exclude Windows: MinGW constexpr issue with ada-url std::string
+      # Exclude WASM: emscripten clang 3.1.71 crashes on ada-url C++20 templates/concepts
+      #   (exit code 139/SIGSEGV during PerformPendingInstantiations)
+      exclude_archs: 'windows_amd64;windows_amd64_mingw;wasm_threads;wasm_eh;wasm_mvp'
 
   duckdb-stable-build:
     name: Build extension binaries
@@ -31,5 +33,6 @@ jobs:
       ci_tools_version: v1.4-andium
       extension_name: urlpattern
       vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
-      # Exclude Windows (MinGW constexpr issue with ada-url)
-      exclude_archs: 'windows_amd64;windows_amd64_mingw'
+      # Exclude Windows: MinGW constexpr issue with ada-url std::string
+      # Exclude WASM: emscripten clang 3.1.71 crashes on ada-url C++20 templates/concepts
+      exclude_archs: 'windows_amd64;windows_amd64_mingw;wasm_threads;wasm_eh;wasm_mvp'
