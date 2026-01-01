@@ -1,6 +1,6 @@
 # name: test/sql/urlpattern.test
 # description: test urlpattern extension
-# group: [urlpattern]
+# group: [sql]
 
 # Require statement will ensure this test is run with this extension loaded
 require urlpattern
