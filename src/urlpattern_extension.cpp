@@ -11,6 +11,7 @@
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 // Include Ada headers - use the main header which includes everything in correct order
 #include <ada.h>
