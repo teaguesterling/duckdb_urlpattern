@@ -312,3 +312,141 @@ statement error
 SELECT urlpattern_test('https://[invalid', 'https://example.com');
 ----
 Invalid URL pattern
+
+#------------------------------------------------------------------------------
+# urlpattern_init - Component-based patterns (path-only support)
+#------------------------------------------------------------------------------
+
+# Path-only pattern matches any protocol/hostname
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/users/:id'), 'https://example.com/users/123');
+----
+true
+
+# Path-only pattern works with different protocols
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/users/:id'), 'http://other.org/users/456');
+----
+true
+
+# Path-only pattern extracts groups correctly
+query I
+SELECT urlpattern_extract(urlpattern_init(pathname := '/users/:id'), 'https://example.com/users/789', 'id');
+----
+789
+
+# Path-only pattern with multiple segments
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/api/:version/:resource'), 'https://api.example.com/api/v1/users');
+----
+true
+
+# Path-only pattern with wildcards
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/files/*'), 'https://cdn.example.com/files/docs/readme.txt');
+----
+true
+
+# Path-only pattern non-match
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/users/:id'), 'https://example.com/posts/123');
+----
+false
+
+# Hostname-only pattern
+query I
+SELECT urlpattern_test(urlpattern_init(hostname := '*.example.com'), 'https://api.example.com/anything');
+----
+true
+
+# Combined hostname and pathname pattern
+query I
+SELECT urlpattern_test(urlpattern_init(hostname := 'api.example.com', pathname := '/v1/*'), 'https://api.example.com/v1/users');
+----
+true
+
+# Protocol constraint with path
+query I
+SELECT urlpattern_test(urlpattern_init(protocol := 'https', pathname := '/secure/*'), 'https://any.host/secure/data');
+----
+true
+
+# Protocol constraint rejects wrong protocol
+query I
+SELECT urlpattern_test(urlpattern_init(protocol := 'https', pathname := '/secure/*'), 'http://any.host/secure/data');
+----
+false
+
+# Extract from hostname group
+query I
+SELECT urlpattern_extract(urlpattern_init(hostname := ':tenant.example.com', pathname := '/api/*'), 'https://acme.example.com/api/users', 'tenant');
+----
+acme
+
+# Full exec with path-only pattern
+query I
+SELECT (urlpattern_exec(urlpattern_init(pathname := '/users/:id'), 'https://example.com/users/42')).matched;
+----
+true
+
+query I
+SELECT (urlpattern_exec(urlpattern_init(pathname := '/users/:id'), 'https://example.com/users/42')).pathname;
+----
+/users/42
+
+query I
+SELECT (urlpattern_exec(urlpattern_init(pathname := '/users/:id'), 'https://example.com/users/42')).groups['id'];
+----
+42
+
+#------------------------------------------------------------------------------
+# Auto-detected path-only patterns (simpler syntax)
+#------------------------------------------------------------------------------
+
+# Path pattern auto-detected from string starting with /
+query I
+SELECT urlpattern_test('/users/:id', 'https://example.com/users/123');
+----
+true
+
+# Path pattern works with any host
+query I
+SELECT urlpattern_test('/api/*', 'http://localhost:8080/api/v1/users');
+----
+true
+
+# Path pattern extraction works
+query I
+SELECT urlpattern_extract('/users/:id', 'https://example.com/users/456', 'id');
+----
+456
+
+# Path pattern with multiple segments
+query I
+SELECT urlpattern_test('/api/:version/:resource/:id', 'https://api.example.com/api/v2/posts/789');
+----
+true
+
+# Path pattern non-match
+query I
+SELECT urlpattern_test('/users/:id', 'https://example.com/posts/123');
+----
+false
+
+# Path pattern in exec
+query I
+SELECT (urlpattern_exec('/products/:category/:id', 'https://shop.example.com/products/electronics/42')).groups['category'];
+----
+electronics
+
+# URLPATTERN type accepts path-only patterns
+query I
+SELECT urlpattern_test(urlpattern('/files/*'), 'https://cdn.example.com/files/image.png');
+----
+true
+
+# Cast to URLPATTERN works with path patterns
+query I
+SELECT urlpattern_test('/docs/:page'::URLPATTERN, 'https://docs.example.com/docs/getting-started');
+----
+true

@@ -27,7 +27,25 @@ struct URLPatternLocalState : public FunctionLocalState {
 	// Cache of compiled patterns keyed by pattern string
 	unordered_map<string, shared_ptr<URLPatternType>> cache;
 
-	// Get or create a compiled pattern
+	// Check if a pattern string looks like a path-only pattern
+	// Returns true for patterns starting with / that don't look like full URLs
+	static bool IsPathOnlyPattern(const std::string &pattern) {
+		if (pattern.empty()) {
+			return false;
+		}
+		// Starts with / and doesn't have :// (not a full URL)
+		if (pattern[0] == '/') {
+			return pattern.find("://") == std::string::npos;
+		}
+		return false;
+	}
+
+	// Get or create a compiled pattern from a string
+	// Handles:
+	// - Regular URL patterns (e.g., "https://example.com/*")
+	// - Init-based patterns (prefixed with "init:")
+	// - Path-only patterns (e.g., "/users/:id") - auto-detected
+	// - File URLs (e.g., "file:///path/to/file")
 	shared_ptr<URLPatternType> GetPattern(const string_t &pattern_str) {
 		string key(pattern_str.GetData(), pattern_str.GetSize());
 
@@ -36,7 +54,67 @@ struct URLPatternLocalState : public FunctionLocalState {
 			return it->second;
 		}
 
-		// Parse and cache the pattern
+		// Check if this is an init-based pattern (created by urlpattern_init)
+		if (key.rfind("init:", 0) == 0) {
+			// Parse the init string back into a url_pattern_init struct
+			ada::url_pattern_init init;
+			std::string_view remaining(key.data() + 5, key.size() - 5); // Skip "init:"
+
+			while (!remaining.empty()) {
+				// Find the next component (format: "X=value;")
+				auto eq_pos = remaining.find('=');
+				if (eq_pos == std::string_view::npos)
+					break;
+
+				char component = remaining[0];
+				remaining.remove_prefix(eq_pos + 1);
+
+				auto semi_pos = remaining.find(';');
+				if (semi_pos == std::string_view::npos)
+					break;
+
+				std::string value(remaining.substr(0, semi_pos));
+				remaining.remove_prefix(semi_pos + 1);
+
+				switch (component) {
+				case 'P':
+					init.protocol = value;
+					break;
+				case 'U':
+					init.username = value;
+					break;
+				case 'W':
+					init.password = value;
+					break;
+				case 'H':
+					init.hostname = value;
+					break;
+				case 'O':
+					init.port = value;
+					break;
+				case 'A':
+					init.pathname = value;
+					break;
+				case 'S':
+					init.search = value;
+					break;
+				case 'F':
+					init.hash = value;
+					break;
+				}
+			}
+
+			return GetPatternFromInit(init, key);
+		}
+
+		// Check if this is a path-only pattern (starts with / but no protocol)
+		if (IsPathOnlyPattern(key)) {
+			ada::url_pattern_init init;
+			init.pathname = key;
+			return GetPatternFromInit(init, "init:A=" + key + ";");
+		}
+
+		// Parse as a regular URL pattern string
 		auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
 		    std::string_view(pattern_str.GetData(), pattern_str.GetSize()), nullptr, nullptr);
 
@@ -46,6 +124,26 @@ struct URLPatternLocalState : public FunctionLocalState {
 
 		auto pattern_ptr = make_shared_ptr<URLPatternType>(std::move(pattern_result.value()));
 		cache[key] = pattern_ptr;
+		return pattern_ptr;
+	}
+
+	// Get or create a compiled pattern from a url_pattern_init struct
+	shared_ptr<URLPatternType> GetPatternFromInit(const ada::url_pattern_init &init, const string &cache_key) {
+		auto it = cache.find(cache_key);
+		if (it != cache.end()) {
+			return it->second;
+		}
+
+		// Parse using the init struct
+		auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
+		    ada::url_pattern_init(init), nullptr, nullptr);
+
+		if (!pattern_result) {
+			throw InvalidInputException("Invalid URL pattern components");
+		}
+
+		auto pattern_ptr = make_shared_ptr<URLPatternType>(std::move(pattern_result.value()));
+		cache[cache_key] = pattern_ptr;
 		return pattern_ptr;
 	}
 };
@@ -72,8 +170,33 @@ static bool IsUrlpatternType(const LogicalType &type) {
 	return type.id() == LogicalTypeId::VARCHAR && type.HasAlias() && type.GetAlias() == URLPATTERN_TYPE_NAME;
 }
 
+// Check if a pattern string looks like a path-only pattern (standalone function)
+static bool IsPathOnlyPatternStatic(const std::string &pattern) {
+	if (pattern.empty()) {
+		return false;
+	}
+	// Starts with / and doesn't have :// (not a full URL)
+	if (pattern[0] == '/') {
+		return pattern.find("://") == std::string::npos;
+	}
+	return false;
+}
+
 // Validate a pattern string - returns true if valid
+// Handles path-only patterns (e.g., "/users/:id") as well as full URL patterns
 static bool ValidateUrlpattern(const string_t &pattern_str) {
+	std::string pattern(pattern_str.GetData(), pattern_str.GetSize());
+
+	// Path-only patterns are valid if they can be parsed as pathname
+	if (IsPathOnlyPatternStatic(pattern)) {
+		ada::url_pattern_init init;
+		init.pathname = pattern;
+		auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
+		    ada::url_pattern_init(init), nullptr, nullptr);
+		return pattern_result.has_value();
+	}
+
+	// Regular URL pattern
 	auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
 	    std::string_view(pattern_str.GetData(), pattern_str.GetSize()), nullptr, nullptr);
 	return pattern_result.has_value();
@@ -108,6 +231,137 @@ static bool CastVarcharToUrlpattern(Vector &source, Vector &result, idx_t count,
 		return StringVector::AddString(result, pattern_str);
 	});
 	return true;
+}
+
+//------------------------------------------------------------------------------
+// urlpattern_init - Named parameter bind data
+//------------------------------------------------------------------------------
+struct UrlpatternInitBindData : public FunctionData {
+	// Indices for each parameter (-1 if not provided)
+	idx_t protocol_idx = DConstants::INVALID_INDEX;
+	idx_t username_idx = DConstants::INVALID_INDEX;
+	idx_t password_idx = DConstants::INVALID_INDEX;
+	idx_t hostname_idx = DConstants::INVALID_INDEX;
+	idx_t port_idx = DConstants::INVALID_INDEX;
+	idx_t pathname_idx = DConstants::INVALID_INDEX;
+	idx_t search_idx = DConstants::INVALID_INDEX;
+	idx_t hash_idx = DConstants::INVALID_INDEX;
+
+	unique_ptr<FunctionData> Copy() const override {
+		auto copy = make_uniq<UrlpatternInitBindData>();
+		copy->protocol_idx = protocol_idx;
+		copy->username_idx = username_idx;
+		copy->password_idx = password_idx;
+		copy->hostname_idx = hostname_idx;
+		copy->port_idx = port_idx;
+		copy->pathname_idx = pathname_idx;
+		copy->search_idx = search_idx;
+		copy->hash_idx = hash_idx;
+		return copy;
+	}
+
+	bool Equals(const FunctionData &other_p) const override {
+		auto &other = other_p.Cast<UrlpatternInitBindData>();
+		return protocol_idx == other.protocol_idx && username_idx == other.username_idx &&
+		       password_idx == other.password_idx && hostname_idx == other.hostname_idx &&
+		       port_idx == other.port_idx && pathname_idx == other.pathname_idx && search_idx == other.search_idx &&
+		       hash_idx == other.hash_idx;
+	}
+};
+
+static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, ScalarFunction &bound_function,
+                                                   vector<unique_ptr<Expression>> &arguments) {
+	auto bind_data = make_uniq<UrlpatternInitBindData>();
+
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		auto &arg = arguments[i];
+		if (!arg->alias.empty()) {
+			if (arg->alias == "protocol") {
+				bind_data->protocol_idx = i;
+			} else if (arg->alias == "username") {
+				bind_data->username_idx = i;
+			} else if (arg->alias == "password") {
+				bind_data->password_idx = i;
+			} else if (arg->alias == "hostname") {
+				bind_data->hostname_idx = i;
+			} else if (arg->alias == "port") {
+				bind_data->port_idx = i;
+			} else if (arg->alias == "pathname") {
+				bind_data->pathname_idx = i;
+			} else if (arg->alias == "search") {
+				bind_data->search_idx = i;
+			} else if (arg->alias == "hash") {
+				bind_data->hash_idx = i;
+			} else {
+				throw BinderException("Unknown parameter '%s' for urlpattern_init. Valid parameters: protocol, "
+				                      "username, password, hostname, port, pathname, search, hash",
+				                      arg->alias);
+			}
+		}
+	}
+
+	return bind_data;
+}
+
+//------------------------------------------------------------------------------
+// urlpattern_init(protocol, username, password, hostname, port, pathname, search, hash) -> URLPATTERN
+// Creates a URLPattern from individual components (supports path-only patterns)
+//------------------------------------------------------------------------------
+static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<UrlpatternInitBindData>();
+	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
+
+	// Helper to get optional string from argument
+	auto get_optional_string = [&](idx_t param_idx, idx_t row_idx) -> std::optional<std::string> {
+		if (param_idx == DConstants::INVALID_INDEX) {
+			return std::nullopt;
+		}
+		auto &vec = args.data[param_idx];
+		if (FlatVector::IsNull(vec, row_idx)) {
+			return std::nullopt;
+		}
+		auto str = FlatVector::GetData<string_t>(vec)[row_idx];
+		return std::string(str.GetData(), str.GetSize());
+	};
+
+	for (idx_t i = 0; i < args.size(); i++) {
+		// Build the url_pattern_init struct
+		ada::url_pattern_init init;
+		init.protocol = get_optional_string(bind_data.protocol_idx, i);
+		init.username = get_optional_string(bind_data.username_idx, i);
+		init.password = get_optional_string(bind_data.password_idx, i);
+		init.hostname = get_optional_string(bind_data.hostname_idx, i);
+		init.port = get_optional_string(bind_data.port_idx, i);
+		init.pathname = get_optional_string(bind_data.pathname_idx, i);
+		init.search = get_optional_string(bind_data.search_idx, i);
+		init.hash = get_optional_string(bind_data.hash_idx, i);
+
+		// Build a cache key from the components
+		std::string cache_key = "init:";
+		if (init.protocol)
+			cache_key += "P=" + *init.protocol + ";";
+		if (init.username)
+			cache_key += "U=" + *init.username + ";";
+		if (init.password)
+			cache_key += "W=" + *init.password + ";";
+		if (init.hostname)
+			cache_key += "H=" + *init.hostname + ";";
+		if (init.port)
+			cache_key += "O=" + *init.port + ";";
+		if (init.pathname)
+			cache_key += "A=" + *init.pathname + ";";
+		if (init.search)
+			cache_key += "S=" + *init.search + ";";
+		if (init.hash)
+			cache_key += "F=" + *init.hash + ";";
+
+		// Parse the pattern to validate it
+		auto pattern = local_state.GetPatternFromInit(init, cache_key);
+
+		// Return the cache key as the pattern identifier
+		// This allows the pattern to be reused with other functions
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, cache_key);
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -447,6 +701,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	auto urlpattern_constructor_func =
 	    ScalarFunction("urlpattern", {LogicalType::VARCHAR}, urlpattern_type, UrlpatternConstructorFunction);
 	loader.RegisterFunction(urlpattern_constructor_func);
+
+	// Register urlpattern_init() function for component-based patterns (supports path-only patterns)
+	// Usage: urlpattern_init(pathname := '/users/:id')
+	//        urlpattern_init(protocol := 'https', hostname := '*.example.com', pathname := '/api/*')
+	auto urlpattern_init_func = ScalarFunction("urlpattern_init", {}, urlpattern_type, UrlpatternInitFunction,
+	                                           UrlpatternInitBind, nullptr, nullptr, InitURLPatternLocalState);
+	urlpattern_init_func.varargs = LogicalType::VARCHAR;
+	urlpattern_init_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	loader.RegisterFunction(urlpattern_init_func);
 
 	// Register urlpattern_test function (accepts URLPATTERN)
 	auto urlpattern_test_func = ScalarFunction("urlpattern_test", {urlpattern_type, LogicalType::VARCHAR},

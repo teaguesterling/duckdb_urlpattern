@@ -63,6 +63,7 @@ make test
 | Function | Description |
 |----------|-------------|
 | `urlpattern(pattern)` | Create a validated URLPATTERN |
+| `urlpattern_init(...)` | Create pattern from components (supports path-only) |
 | `urlpattern_test(pattern, url)` | Test if URL matches pattern |
 | `urlpattern_exec(pattern, url)` | Execute pattern and return full match info |
 | `urlpattern_extract(pattern, url, group)` | Extract a named group value |
@@ -72,6 +73,51 @@ make test
 | `urlpattern_port(pattern)` | Get port component |
 | `urlpattern_search(pattern)` | Get search/query component |
 | `urlpattern_hash(pattern)` | Get hash/fragment component |
+
+## Path-Only Patterns
+
+Patterns starting with `/` are automatically treated as pathname-only patterns, matching any protocol and hostname:
+
+```sql
+-- Simple path pattern (auto-detected)
+SELECT urlpattern_test('/users/:id', 'https://example.com/users/123');
+-- Returns: true
+
+-- Works with any host
+SELECT urlpattern_test('/api/*', 'http://localhost:8080/api/v1/users');
+-- Returns: true
+
+-- Extract named groups
+SELECT urlpattern_extract('/users/:id', 'https://example.com/users/456', 'id');
+-- Returns: '456'
+```
+
+For more control, use `urlpattern_init` to specify individual components:
+
+```sql
+-- Explicit pathname-only pattern
+SELECT urlpattern_test(
+    urlpattern_init(pathname := '/users/:id'),
+    'https://example.com/users/123'
+);
+
+-- Combine hostname and pathname
+SELECT urlpattern_test(
+    urlpattern_init(
+        hostname := '*.example.com',
+        pathname := '/api/*'
+    ),
+    'https://api.example.com/api/users'
+);
+
+-- Restrict to specific protocol
+SELECT urlpattern_test(
+    urlpattern_init(protocol := 'https', pathname := '/secure/*'),
+    'http://example.com/secure/data'  -- Returns false (wrong protocol)
+);
+```
+
+Available parameters: `protocol`, `hostname`, `port`, `pathname`, `search`, `hash`, `username`, `password`
 
 ## Pattern Syntax
 
