@@ -450,3 +450,196 @@ query I
 SELECT urlpattern_test('/docs/:page'::URLPATTERN, 'https://docs.example.com/docs/getting-started');
 ----
 true
+
+#------------------------------------------------------------------------------
+# URL Parsing Functions
+#------------------------------------------------------------------------------
+
+# url_parse returns a struct with all components
+query I
+SELECT (url_parse('https://user:pass@example.com:8080/path/to/page?foo=bar&baz=qux#section')).protocol;
+----
+https:
+
+query I
+SELECT (url_parse('https://user:pass@example.com:8080/path/to/page?foo=bar#section')).hostname;
+----
+example.com
+
+query I
+SELECT (url_parse('https://example.com:8080/path')).port;
+----
+8080
+
+query I
+SELECT (url_parse('https://example.com/path/to/page')).pathname;
+----
+/path/to/page
+
+query I
+SELECT (url_parse('https://example.com?foo=bar&baz=qux')).search;
+----
+?foo=bar&baz=qux
+
+query I
+SELECT (url_parse('https://example.com/page#section')).hash;
+----
+#section
+
+query I
+SELECT (url_parse('https://user:pass@example.com/')).username;
+----
+user
+
+query I
+SELECT (url_parse('https://user:pass@example.com/')).password;
+----
+pass
+
+query I
+SELECT (url_parse('https://example.com:443/path')).origin;
+----
+https://example.com
+
+# Individual URL component functions
+query I
+SELECT url_protocol('https://example.com/path');
+----
+https:
+
+query I
+SELECT url_host('https://example.com:8080/path');
+----
+example.com:8080
+
+query I
+SELECT url_hostname('https://example.com:8080/path');
+----
+example.com
+
+query I
+SELECT url_port('https://example.com:8080/path');
+----
+8080
+
+query I
+SELECT url_pathname('https://example.com/users/123');
+----
+/users/123
+
+query I
+SELECT url_search('https://example.com?q=test&page=1');
+----
+?q=test&page=1
+
+query I
+SELECT url_hash('https://example.com/page#top');
+----
+#top
+
+query I
+SELECT url_origin('https://api.example.com:8443/endpoint');
+----
+https://api.example.com:8443
+
+query I
+SELECT url_href('HTTPS://EXAMPLE.COM/Path');
+----
+https://example.com/Path
+
+query I
+SELECT url_valid('https://example.com');
+----
+true
+
+query I
+SELECT url_valid('not a url');
+----
+false
+
+# Empty components return empty strings
+query I
+SELECT length(url_port('https://example.com/path'));
+----
+0
+
+query I
+SELECT length(url_search('https://example.com/path'));
+----
+0
+
+query I
+SELECT length(url_hash('https://example.com/path'));
+----
+0
+
+#------------------------------------------------------------------------------
+# Query Parameter Functions
+#------------------------------------------------------------------------------
+
+# url_search_param extracts single parameter
+query I
+SELECT url_search_param('https://example.com?page=5&sort=asc', 'page');
+----
+5
+
+query I
+SELECT url_search_param('https://example.com?page=5&sort=asc', 'sort');
+----
+asc
+
+# Missing parameter returns NULL
+query I
+SELECT url_search_param('https://example.com?page=5', 'missing') IS NULL;
+----
+true
+
+# url_search_params returns MAP of all parameters
+query I
+SELECT url_search_params('https://example.com?a=1&b=2')['a'];
+----
+1
+
+query I
+SELECT url_search_params('https://example.com?a=1&b=2')['b'];
+----
+2
+
+# Empty search returns empty map
+query I
+SELECT map_keys(url_search_params('https://example.com/path'));
+----
+[]
+
+#------------------------------------------------------------------------------
+# URL Resolution
+#------------------------------------------------------------------------------
+
+# Resolve relative paths
+query I
+SELECT url_resolve('https://example.com/docs/guide/', '../api/users');
+----
+https://example.com/docs/api/users
+
+query I
+SELECT url_resolve('https://example.com/docs/', 'getting-started');
+----
+https://example.com/docs/getting-started
+
+# Absolute URL overrides base
+query I
+SELECT url_resolve('https://example.com/', 'https://other.com/path');
+----
+https://other.com/path
+
+# Protocol-relative URL
+query I
+SELECT url_resolve('https://example.com/', '//cdn.example.com/asset.js');
+----
+https://cdn.example.com/asset.js
+
+# Root-relative path
+query I
+SELECT url_resolve('https://example.com/docs/guide/', '/api/v1');
+----
+https://example.com/api/v1

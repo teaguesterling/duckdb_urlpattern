@@ -686,6 +686,370 @@ static LogicalType GetUrlpatternExecReturnType() {
 }
 
 //------------------------------------------------------------------------------
+// URL Parsing Functions - Parse actual URLs (not patterns)
+//------------------------------------------------------------------------------
+
+// Helper to parse a URL and return the result
+static tl::expected<ada::url_aggregator, ada::errors> ParseUrl(const string_t &url_str,
+                                                                const string_t *base_url_str = nullptr) {
+	std::string_view url_view(url_str.GetData(), url_str.GetSize());
+
+	if (base_url_str) {
+		std::string_view base_view(base_url_str->GetData(), base_url_str->GetSize());
+		auto base_result = ada::parse<ada::url_aggregator>(base_view, nullptr);
+		if (!base_result) {
+			return tl::unexpected(base_result.error());
+		}
+		return ada::parse<ada::url_aggregator>(url_view, &base_result.value());
+	}
+
+	return ada::parse<ada::url_aggregator>(url_view, nullptr);
+}
+
+// url_protocol(url) -> VARCHAR
+static void UrlProtocolFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto protocol = url_result->get_protocol();
+		return StringVector::AddString(result, protocol.data(), protocol.size());
+	});
+}
+
+// url_host(url) -> VARCHAR (includes port if present)
+static void UrlHostFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto host = url_result->get_host();
+		return StringVector::AddString(result, host.data(), host.size());
+	});
+}
+
+// url_hostname(url) -> VARCHAR (excludes port)
+static void UrlHostnameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto hostname = url_result->get_hostname();
+		return StringVector::AddString(result, hostname.data(), hostname.size());
+	});
+}
+
+// url_port(url) -> VARCHAR
+static void UrlPortFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto port = url_result->get_port();
+		return StringVector::AddString(result, port.data(), port.size());
+	});
+}
+
+// url_pathname(url) -> VARCHAR
+static void UrlPathnameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto pathname = url_result->get_pathname();
+		return StringVector::AddString(result, pathname.data(), pathname.size());
+	});
+}
+
+// url_search(url) -> VARCHAR (the query string including ?)
+static void UrlSearchFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto search = url_result->get_search();
+		return StringVector::AddString(result, search.data(), search.size());
+	});
+}
+
+// url_hash(url) -> VARCHAR (the fragment including #)
+static void UrlHashFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto hash = url_result->get_hash();
+		return StringVector::AddString(result, hash.data(), hash.size());
+	});
+}
+
+// url_username(url) -> VARCHAR
+static void UrlUsernameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto username = url_result->get_username();
+		return StringVector::AddString(result, username.data(), username.size());
+	});
+}
+
+// url_password(url) -> VARCHAR
+static void UrlPasswordFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto password = url_result->get_password();
+		return StringVector::AddString(result, password.data(), password.size());
+	});
+}
+
+// url_origin(url) -> VARCHAR
+static void UrlOriginFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto origin = url_result->get_origin();
+		return StringVector::AddString(result, origin);
+	});
+}
+
+// url_href(url) -> VARCHAR (normalized URL)
+static void UrlHrefFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			return string_t();
+		}
+		auto href = url_result->get_href();
+		return StringVector::AddString(result, href.data(), href.size());
+	});
+}
+
+// url_valid(url) -> BOOLEAN
+static void UrlValidFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [&](string_t url_str) {
+		auto url_result = ParseUrl(url_str);
+		return url_result.has_value();
+	});
+}
+
+// Define the return type for url_parse
+static LogicalType GetUrlParseReturnType() {
+	child_list_t<LogicalType> struct_children;
+	struct_children.push_back(make_pair("href", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("origin", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("protocol", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("username", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("password", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("host", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("hostname", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("port", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("pathname", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("search", LogicalType::VARCHAR));
+	struct_children.push_back(make_pair("hash", LogicalType::VARCHAR));
+	return LogicalType::STRUCT(struct_children);
+}
+
+// url_parse(url) -> STRUCT
+static void UrlParseFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &url_vector = args.data[0];
+
+	auto &child_entries = StructVector::GetEntries(result);
+	auto &href_vec = *child_entries[0];
+	auto &origin_vec = *child_entries[1];
+	auto &protocol_vec = *child_entries[2];
+	auto &username_vec = *child_entries[3];
+	auto &password_vec = *child_entries[4];
+	auto &host_vec = *child_entries[5];
+	auto &hostname_vec = *child_entries[6];
+	auto &port_vec = *child_entries[7];
+	auto &pathname_vec = *child_entries[8];
+	auto &search_vec = *child_entries[9];
+	auto &hash_vec = *child_entries[10];
+
+	UnifiedVectorFormat url_data;
+	url_vector.ToUnifiedFormat(args.size(), url_data);
+	auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
+
+	for (idx_t i = 0; i < args.size(); i++) {
+		auto url_idx = url_data.sel->get_index(i);
+
+		if (!url_data.validity.RowIsValid(url_idx)) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+
+		auto url_str = urls[url_idx];
+		auto url_result = ParseUrl(url_str);
+
+		if (!url_result) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+
+		auto &url = url_result.value();
+
+		auto href = url.get_href();
+		auto origin = url.get_origin();
+		auto protocol = url.get_protocol();
+		auto username = url.get_username();
+		auto password = url.get_password();
+		auto host = url.get_host();
+		auto hostname = url.get_hostname();
+		auto port = url.get_port();
+		auto pathname = url.get_pathname();
+		auto search = url.get_search();
+		auto hash = url.get_hash();
+
+		FlatVector::GetData<string_t>(href_vec)[i] = StringVector::AddString(href_vec, href.data(), href.size());
+		FlatVector::GetData<string_t>(origin_vec)[i] = StringVector::AddString(origin_vec, origin);
+		FlatVector::GetData<string_t>(protocol_vec)[i] =
+		    StringVector::AddString(protocol_vec, protocol.data(), protocol.size());
+		FlatVector::GetData<string_t>(username_vec)[i] =
+		    StringVector::AddString(username_vec, username.data(), username.size());
+		FlatVector::GetData<string_t>(password_vec)[i] =
+		    StringVector::AddString(password_vec, password.data(), password.size());
+		FlatVector::GetData<string_t>(host_vec)[i] = StringVector::AddString(host_vec, host.data(), host.size());
+		FlatVector::GetData<string_t>(hostname_vec)[i] =
+		    StringVector::AddString(hostname_vec, hostname.data(), hostname.size());
+		FlatVector::GetData<string_t>(port_vec)[i] = StringVector::AddString(port_vec, port.data(), port.size());
+		FlatVector::GetData<string_t>(pathname_vec)[i] =
+		    StringVector::AddString(pathname_vec, pathname.data(), pathname.size());
+		FlatVector::GetData<string_t>(search_vec)[i] =
+		    StringVector::AddString(search_vec, search.data(), search.size());
+		FlatVector::GetData<string_t>(hash_vec)[i] = StringVector::AddString(hash_vec, hash.data(), hash.size());
+	}
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+}
+
+//------------------------------------------------------------------------------
+// Query Parameter Parsing
+//------------------------------------------------------------------------------
+
+// Helper to parse query string into key-value pairs
+static vector<pair<string, string>> ParseQueryString(std::string_view query) {
+	vector<pair<string, string>> params;
+
+	// Skip leading ? if present
+	if (!query.empty() && query[0] == '?') {
+		query.remove_prefix(1);
+	}
+
+	while (!query.empty()) {
+		// Find the next & or end
+		auto amp_pos = query.find('&');
+		std::string_view param = (amp_pos == std::string_view::npos) ? query : query.substr(0, amp_pos);
+
+		if (!param.empty()) {
+			// Find = separator
+			auto eq_pos = param.find('=');
+			if (eq_pos == std::string_view::npos) {
+				// Key only, no value
+				params.emplace_back(std::string(param), "");
+			} else {
+				params.emplace_back(std::string(param.substr(0, eq_pos)), std::string(param.substr(eq_pos + 1)));
+			}
+		}
+
+		if (amp_pos == std::string_view::npos) {
+			break;
+		}
+		query.remove_prefix(amp_pos + 1);
+	}
+
+	return params;
+}
+
+// url_search_params(url) -> MAP(VARCHAR, VARCHAR)
+static void UrlSearchParamsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &url_vector = args.data[0];
+	UnifiedVectorFormat url_data;
+	url_vector.ToUnifiedFormat(args.size(), url_data);
+	auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
+
+	for (idx_t i = 0; i < args.size(); i++) {
+		auto url_idx = url_data.sel->get_index(i);
+
+		if (!url_data.validity.RowIsValid(url_idx)) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+
+		auto url_str = urls[url_idx];
+		auto url_result = ParseUrl(url_str);
+
+		vector<Value> keys;
+		vector<Value> values;
+
+		if (url_result) {
+			auto search = url_result->get_search();
+			auto params = ParseQueryString(search);
+
+			for (const auto &[key, val] : params) {
+				keys.push_back(Value(key));
+				values.push_back(Value(val));
+			}
+		}
+
+		result.SetValue(i, Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values)));
+	}
+}
+
+// url_search_param(url, name) -> VARCHAR
+static void UrlSearchParamFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, string_t, string_t>(
+	    args.data[0], args.data[1], result, args.size(), [&](string_t url_str, string_t name_str) {
+		    auto url_result = ParseUrl(url_str);
+		    if (!url_result) {
+			    return string_t();
+		    }
+
+		    auto search = url_result->get_search();
+		    auto params = ParseQueryString(search);
+		    std::string name(name_str.GetData(), name_str.GetSize());
+
+		    for (const auto &[key, val] : params) {
+			    if (key == name) {
+				    return StringVector::AddString(result, val);
+			    }
+		    }
+
+		    return string_t();
+	    });
+}
+
+//------------------------------------------------------------------------------
+// URL Resolution
+//------------------------------------------------------------------------------
+
+// url_resolve(base, relative) -> VARCHAR
+static void UrlResolveFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, string_t, string_t>(
+	    args.data[0], args.data[1], result, args.size(), [&](string_t base_str, string_t relative_str) {
+		    auto url_result = ParseUrl(relative_str, &base_str);
+		    if (!url_result) {
+			    return string_t();
+		    }
+		    auto href = url_result->get_href();
+		    return StringVector::AddString(result, href.data(), href.size());
+	    });
+}
+
+//------------------------------------------------------------------------------
 // Extension loading
 //------------------------------------------------------------------------------
 static void LoadInternal(ExtensionLoader &loader) {
@@ -761,6 +1125,61 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                           GetUrlpatternExecReturnType(), UrlpatternExecFunction);
 	urlpattern_exec_func.init_local_state = InitURLPatternLocalState;
 	loader.RegisterFunction(urlpattern_exec_func);
+
+	//--------------------------------------------------------------------------
+	// URL Parsing Functions
+	//--------------------------------------------------------------------------
+
+	// url_parse(url) -> STRUCT
+	loader.RegisterFunction(
+	    ScalarFunction("url_parse", {LogicalType::VARCHAR}, GetUrlParseReturnType(), UrlParseFunction));
+
+	// Individual component functions
+	loader.RegisterFunction(
+	    ScalarFunction("url_protocol", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlProtocolFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_host", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_hostname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostnameFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_port", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPortFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_pathname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPathnameFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_search", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlSearchFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_hash", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHashFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_username", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlUsernameFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_password", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPasswordFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_origin", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlOriginFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_href", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHrefFunction));
+	loader.RegisterFunction(
+	    ScalarFunction("url_valid", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, UrlValidFunction));
+
+	//--------------------------------------------------------------------------
+	// Query Parameter Functions
+	//--------------------------------------------------------------------------
+
+	// url_search_params(url) -> MAP
+	loader.RegisterFunction(ScalarFunction("url_search_params", {LogicalType::VARCHAR},
+	                                       LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR),
+	                                       UrlSearchParamsFunction));
+
+	// url_search_param(url, name) -> VARCHAR
+	loader.RegisterFunction(ScalarFunction("url_search_param", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                       LogicalType::VARCHAR, UrlSearchParamFunction));
+
+	//--------------------------------------------------------------------------
+	// URL Resolution
+	//--------------------------------------------------------------------------
+
+	// url_resolve(base, relative) -> VARCHAR
+	loader.RegisterFunction(ScalarFunction("url_resolve", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                       LogicalType::VARCHAR, UrlResolveFunction));
 }
 
 void UrlpatternExtension::Load(ExtensionLoader &loader) {
