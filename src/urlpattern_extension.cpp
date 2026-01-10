@@ -1099,6 +1099,423 @@ static void UrlResolveFunction(DataChunk &args, ExpressionState &state, Vector &
 }
 
 //------------------------------------------------------------------------------
+// URL Building and Modification
+//------------------------------------------------------------------------------
+
+// Bind data for url_build and url_modify - tracks parameter positions
+struct UrlBuildBindData : public FunctionData {
+	// For url_modify: index of the base URL (first positional arg)
+	idx_t url_idx = DConstants::INVALID_INDEX;
+
+	// Named parameter indices
+	idx_t protocol_idx = DConstants::INVALID_INDEX;
+	idx_t username_idx = DConstants::INVALID_INDEX;
+	idx_t password_idx = DConstants::INVALID_INDEX;
+	idx_t hostname_idx = DConstants::INVALID_INDEX;
+	idx_t port_idx = DConstants::INVALID_INDEX;
+	idx_t pathname_idx = DConstants::INVALID_INDEX;
+	idx_t search_idx = DConstants::INVALID_INDEX;
+	idx_t search_params_idx = DConstants::INVALID_INDEX;
+	idx_t hash_idx = DConstants::INVALID_INDEX;
+	idx_t encode_idx = DConstants::INVALID_INDEX;
+
+	// Whether this is url_modify (has base URL) or url_build
+	bool is_modify = false;
+
+	unique_ptr<FunctionData> Copy() const override {
+		auto copy = make_uniq<UrlBuildBindData>();
+		copy->url_idx = url_idx;
+		copy->protocol_idx = protocol_idx;
+		copy->username_idx = username_idx;
+		copy->password_idx = password_idx;
+		copy->hostname_idx = hostname_idx;
+		copy->port_idx = port_idx;
+		copy->pathname_idx = pathname_idx;
+		copy->search_idx = search_idx;
+		copy->search_params_idx = search_params_idx;
+		copy->hash_idx = hash_idx;
+		copy->encode_idx = encode_idx;
+		copy->is_modify = is_modify;
+		return copy;
+	}
+
+	bool Equals(const FunctionData &other_p) const override {
+		auto &other = other_p.Cast<UrlBuildBindData>();
+		return url_idx == other.url_idx && protocol_idx == other.protocol_idx && username_idx == other.username_idx &&
+		       password_idx == other.password_idx && hostname_idx == other.hostname_idx &&
+		       port_idx == other.port_idx && pathname_idx == other.pathname_idx && search_idx == other.search_idx &&
+		       search_params_idx == other.search_params_idx && hash_idx == other.hash_idx &&
+		       encode_idx == other.encode_idx && is_modify == other.is_modify;
+	}
+};
+
+// URL encode a string (percent-encoding)
+static std::string UrlEncode(const std::string &value) {
+	std::string encoded;
+	encoded.reserve(value.size() * 3); // Worst case: every char encoded
+
+	for (unsigned char c : value) {
+		// Unreserved characters: A-Z, a-z, 0-9, -, _, ., ~
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+		    c == '.' || c == '~') {
+			encoded += c;
+		} else {
+			// Percent-encode
+			encoded += '%';
+			static const char hex[] = "0123456789ABCDEF";
+			encoded += hex[(c >> 4) & 0x0F];
+			encoded += hex[c & 0x0F];
+		}
+	}
+	return encoded;
+}
+
+// Build query string from MAP
+static std::string BuildQueryString(const Value &map_value, bool encode) {
+	if (map_value.IsNull()) {
+		return "";
+	}
+
+	auto &children = MapValue::GetChildren(map_value);
+	if (children.empty()) {
+		return "";
+	}
+
+	std::string query = "?";
+	bool first = true;
+
+	for (const auto &entry : children) {
+		auto &struct_children = StructValue::GetChildren(entry);
+		auto key = struct_children[0].GetValue<string>();
+		auto val = struct_children[1].GetValue<string>();
+
+		if (!first) {
+			query += "&";
+		}
+		first = false;
+
+		if (encode) {
+			query += UrlEncode(key) + "=" + UrlEncode(val);
+		} else {
+			query += key + "=" + val;
+		}
+	}
+
+	return query;
+}
+
+static unique_ptr<FunctionData> UrlBuildBind(ClientContext &context, ScalarFunction &bound_function,
+                                             vector<unique_ptr<Expression>> &arguments) {
+	auto bind_data = make_uniq<UrlBuildBindData>();
+	bind_data->is_modify = false;
+
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		auto &arg = arguments[i];
+		if (!arg->alias.empty()) {
+			if (arg->alias == "protocol") {
+				bind_data->protocol_idx = i;
+			} else if (arg->alias == "username") {
+				bind_data->username_idx = i;
+			} else if (arg->alias == "password") {
+				bind_data->password_idx = i;
+			} else if (arg->alias == "hostname") {
+				bind_data->hostname_idx = i;
+			} else if (arg->alias == "port") {
+				bind_data->port_idx = i;
+			} else if (arg->alias == "pathname") {
+				bind_data->pathname_idx = i;
+			} else if (arg->alias == "search") {
+				bind_data->search_idx = i;
+			} else if (arg->alias == "search_params") {
+				bind_data->search_params_idx = i;
+			} else if (arg->alias == "hash") {
+				bind_data->hash_idx = i;
+			} else if (arg->alias == "encode") {
+				bind_data->encode_idx = i;
+			} else {
+				throw BinderException("Unknown parameter '%s' for url_build. Valid parameters: protocol, "
+				                      "username, password, hostname, port, pathname, search, search_params, hash, encode",
+				                      arg->alias);
+			}
+		}
+	}
+
+	// Check that search and search_params are not both provided
+	if (bind_data->search_idx != DConstants::INVALID_INDEX &&
+	    bind_data->search_params_idx != DConstants::INVALID_INDEX) {
+		throw BinderException("Cannot specify both 'search' and 'search_params' - they are mutually exclusive");
+	}
+
+	return bind_data;
+}
+
+static unique_ptr<FunctionData> UrlModifyBind(ClientContext &context, ScalarFunction &bound_function,
+                                              vector<unique_ptr<Expression>> &arguments) {
+	auto bind_data = make_uniq<UrlBuildBindData>();
+	bind_data->is_modify = true;
+
+	// First unnamed argument is the URL to modify
+	bool found_url = false;
+
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		auto &arg = arguments[i];
+		if (arg->alias.empty()) {
+			// Positional argument - should be the URL
+			if (!found_url) {
+				bind_data->url_idx = i;
+				found_url = true;
+			} else {
+				throw BinderException("url_modify takes exactly one positional argument (the URL to modify)");
+			}
+		} else if (arg->alias == "protocol") {
+			bind_data->protocol_idx = i;
+		} else if (arg->alias == "username") {
+			bind_data->username_idx = i;
+		} else if (arg->alias == "password") {
+			bind_data->password_idx = i;
+		} else if (arg->alias == "hostname") {
+			bind_data->hostname_idx = i;
+		} else if (arg->alias == "port") {
+			bind_data->port_idx = i;
+		} else if (arg->alias == "pathname") {
+			bind_data->pathname_idx = i;
+		} else if (arg->alias == "search") {
+			bind_data->search_idx = i;
+		} else if (arg->alias == "search_params") {
+			bind_data->search_params_idx = i;
+		} else if (arg->alias == "hash") {
+			bind_data->hash_idx = i;
+		} else if (arg->alias == "encode") {
+			bind_data->encode_idx = i;
+		} else {
+			throw BinderException("Unknown parameter '%s' for url_modify. Valid parameters: protocol, "
+			                      "username, password, hostname, port, pathname, search, search_params, hash, encode",
+			                      arg->alias);
+		}
+	}
+
+	if (!found_url) {
+		throw BinderException("url_modify requires a URL as the first argument");
+	}
+
+	// Check that search and search_params are not both provided
+	if (bind_data->search_idx != DConstants::INVALID_INDEX &&
+	    bind_data->search_params_idx != DConstants::INVALID_INDEX) {
+		throw BinderException("Cannot specify both 'search' and 'search_params' - they are mutually exclusive");
+	}
+
+	return bind_data;
+}
+
+// Core URL building logic used by both url_build and url_modify
+static void UrlBuildCore(DataChunk &args, ExpressionState &state, Vector &result, bool is_modify) {
+	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<UrlBuildBindData>();
+
+	// Helper to get optional string from argument
+	auto get_optional_string = [&](idx_t param_idx, idx_t row_idx) -> std::optional<std::string> {
+		if (param_idx == DConstants::INVALID_INDEX) {
+			return std::nullopt;
+		}
+		auto &vec = args.data[param_idx];
+		if (FlatVector::IsNull(vec, row_idx)) {
+			return std::nullopt;
+		}
+		auto str = FlatVector::GetData<string_t>(vec)[row_idx];
+		return std::string(str.GetData(), str.GetSize());
+	};
+
+	// Helper to get optional bool from argument
+	auto get_optional_bool = [&](idx_t param_idx, idx_t row_idx) -> std::optional<bool> {
+		if (param_idx == DConstants::INVALID_INDEX) {
+			return std::nullopt;
+		}
+		auto &vec = args.data[param_idx];
+		if (FlatVector::IsNull(vec, row_idx)) {
+			return std::nullopt;
+		}
+		if (vec.GetType().id() == LogicalTypeId::BOOLEAN) {
+			return FlatVector::GetData<bool>(vec)[row_idx];
+		} else {
+			auto str = FlatVector::GetData<string_t>(vec)[row_idx];
+			std::string s(str.GetData(), str.GetSize());
+			return s == "true" || s == "1" || s == "TRUE";
+		}
+	};
+
+	// Helper to get MAP value from argument
+	auto get_map_value = [&](idx_t param_idx, idx_t row_idx) -> Value {
+		if (param_idx == DConstants::INVALID_INDEX) {
+			return Value();
+		}
+		auto &vec = args.data[param_idx];
+		if (FlatVector::IsNull(vec, row_idx)) {
+			return Value();
+		}
+		return vec.GetValue(row_idx);
+	};
+
+	for (idx_t i = 0; i < args.size(); i++) {
+		// Get encode option (default true)
+		bool encode = get_optional_bool(bind_data.encode_idx, i).value_or(true);
+
+		// Get component values
+		auto protocol = get_optional_string(bind_data.protocol_idx, i);
+		auto username = get_optional_string(bind_data.username_idx, i);
+		auto password = get_optional_string(bind_data.password_idx, i);
+		auto hostname = get_optional_string(bind_data.hostname_idx, i);
+		auto port = get_optional_string(bind_data.port_idx, i);
+		auto pathname = get_optional_string(bind_data.pathname_idx, i);
+		auto search = get_optional_string(bind_data.search_idx, i);
+		auto hash = get_optional_string(bind_data.hash_idx, i);
+		auto search_params = get_map_value(bind_data.search_params_idx, i);
+
+		// For url_modify, start with parsed base URL
+		std::string base_protocol, base_username, base_password, base_hostname, base_port, base_pathname, base_search,
+		    base_hash;
+
+		if (is_modify) {
+			auto base_url_str = get_optional_string(bind_data.url_idx, i);
+			if (!base_url_str) {
+				FlatVector::SetNull(result, i, true);
+				continue;
+			}
+
+			string_t url_st(base_url_str->data(), base_url_str->size());
+			auto url_result = ParseUrl(url_st);
+			if (!url_result) {
+				FlatVector::SetNull(result, i, true);
+				continue;
+			}
+
+			// Extract current components
+			auto &url = url_result.value();
+			auto proto = url.get_protocol();
+			base_protocol = std::string(proto.data(), proto.size());
+			// Remove trailing : from protocol
+			if (!base_protocol.empty() && base_protocol.back() == ':') {
+				base_protocol.pop_back();
+			}
+			auto uname = url.get_username();
+			base_username = std::string(uname.data(), uname.size());
+			auto pwd = url.get_password();
+			base_password = std::string(pwd.data(), pwd.size());
+			auto hname = url.get_hostname();
+			base_hostname = std::string(hname.data(), hname.size());
+			auto prt = url.get_port();
+			base_port = std::string(prt.data(), prt.size());
+			auto pth = url.get_pathname();
+			base_pathname = std::string(pth.data(), pth.size());
+			auto srch = url.get_search();
+			base_search = std::string(srch.data(), srch.size());
+			auto hsh = url.get_hash();
+			base_hash = std::string(hsh.data(), hsh.size());
+		}
+
+		// Use provided values or fall back to base (for modify) or empty (for build)
+		std::string final_protocol = protocol.value_or(is_modify ? base_protocol : "");
+		std::string final_username = username.value_or(is_modify ? base_username : "");
+		std::string final_password = password.value_or(is_modify ? base_password : "");
+		std::string final_hostname = hostname.value_or(is_modify ? base_hostname : "");
+		std::string final_port = port.value_or(is_modify ? base_port : "");
+		std::string final_pathname = pathname.value_or(is_modify ? base_pathname : "");
+		std::string final_hash = hash.value_or(is_modify ? base_hash : "");
+
+		// Handle search/search_params
+		std::string final_search;
+		if (!search_params.IsNull()) {
+			final_search = BuildQueryString(search_params, encode);
+		} else if (search.has_value()) {
+			final_search = search.value();
+			// Ensure it starts with ?
+			if (!final_search.empty() && final_search[0] != '?') {
+				final_search = "?" + final_search;
+			}
+		} else if (is_modify) {
+			final_search = base_search;
+		}
+
+		// Ensure hash starts with #
+		if (!final_hash.empty() && final_hash[0] != '#') {
+			final_hash = "#" + final_hash;
+		}
+
+		// Build the URL string
+		std::string url_str;
+
+		// Protocol
+		if (!final_protocol.empty()) {
+			url_str += final_protocol + "://";
+		}
+
+		// Username:password@
+		if (!final_username.empty()) {
+			if (encode) {
+				url_str += UrlEncode(final_username);
+			} else {
+				url_str += final_username;
+			}
+			if (!final_password.empty()) {
+				url_str += ":";
+				if (encode) {
+					url_str += UrlEncode(final_password);
+				} else {
+					url_str += final_password;
+				}
+			}
+			url_str += "@";
+		}
+
+		// Hostname
+		url_str += final_hostname;
+
+		// Port
+		if (!final_port.empty()) {
+			url_str += ":" + final_port;
+		}
+
+		// Pathname
+		if (!final_pathname.empty()) {
+			if (final_pathname[0] != '/' && !final_hostname.empty()) {
+				url_str += "/";
+			}
+			url_str += final_pathname;
+		} else if (!final_hostname.empty()) {
+			// Ensure at least a / for the path if we have a host
+			url_str += "/";
+		}
+
+		// Search/query
+		url_str += final_search;
+
+		// Hash/fragment
+		url_str += final_hash;
+
+		// For url_build with no protocol, just return the constructed path-like URL
+		// For url_modify or url_build with protocol, validate it can be parsed
+		if (!final_protocol.empty()) {
+			string_t test_url(url_str.data(), url_str.size());
+			auto test_result = ParseUrl(test_url);
+			if (!test_result) {
+				FlatVector::SetNull(result, i, true);
+				continue;
+			}
+		}
+
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, url_str);
+	}
+}
+
+// url_build(protocol := ..., hostname := ..., ...) -> VARCHAR
+static void UrlBuildFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UrlBuildCore(args, state, result, false);
+}
+
+// url_modify(url, protocol := ..., hostname := ..., ...) -> VARCHAR
+static void UrlModifyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UrlBuildCore(args, state, result, true);
+}
+
+//------------------------------------------------------------------------------
 // Extension loading
 //------------------------------------------------------------------------------
 static void LoadInternal(ExtensionLoader &loader) {
@@ -1229,6 +1646,22 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// url_resolve(base, relative) -> VARCHAR
 	loader.RegisterFunction(ScalarFunction("url_resolve", {LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                                       LogicalType::VARCHAR, UrlResolveFunction));
+
+	//--------------------------------------------------------------------------
+	// URL Building and Modification
+	//--------------------------------------------------------------------------
+
+	// url_build(protocol := ..., hostname := ..., ...) -> VARCHAR
+	auto url_build_func = ScalarFunction("url_build", {}, LogicalType::VARCHAR, UrlBuildFunction, UrlBuildBind);
+	url_build_func.varargs = LogicalType::ANY;
+	url_build_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	loader.RegisterFunction(url_build_func);
+
+	// url_modify(url, protocol := ..., hostname := ..., ...) -> VARCHAR
+	auto url_modify_func = ScalarFunction("url_modify", {}, LogicalType::VARCHAR, UrlModifyFunction, UrlModifyBind);
+	url_modify_func.varargs = LogicalType::ANY;
+	url_modify_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	loader.RegisterFunction(url_modify_func);
 }
 
 void UrlpatternExtension::Load(ExtensionLoader &loader) {
