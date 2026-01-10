@@ -1060,25 +1060,51 @@ static void UrlSearchParamsFunction(DataChunk &args, ExpressionState &state, Vec
 
 // url_search_param(url, name) -> VARCHAR
 static void UrlSearchParamFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t url_str, string_t name_str) {
-		    auto url_result = ParseUrl(url_str);
-		    if (!url_result) {
-			    return string_t();
-		    }
+	auto &url_vector = args.data[0];
+	auto &name_vector = args.data[1];
 
-		    auto search = url_result->get_search();
-		    auto params = ParseQueryString(search);
-		    std::string name(name_str.GetData(), name_str.GetSize());
+	UnifiedVectorFormat url_data, name_data;
+	url_vector.ToUnifiedFormat(args.size(), url_data);
+	name_vector.ToUnifiedFormat(args.size(), name_data);
 
-		    for (const auto &[key, val] : params) {
-			    if (key == name) {
-				    return StringVector::AddString(result, val);
-			    }
-		    }
+	auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
+	auto names = UnifiedVectorFormat::GetData<string_t>(name_data);
 
-		    return string_t();
-	    });
+	for (idx_t i = 0; i < args.size(); i++) {
+		auto url_idx = url_data.sel->get_index(i);
+		auto name_idx = name_data.sel->get_index(i);
+
+		if (!url_data.validity.RowIsValid(url_idx) || !name_data.validity.RowIsValid(name_idx)) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+
+		auto url_str = urls[url_idx];
+		auto name_str = names[name_idx];
+
+		auto url_result = ParseUrl(url_str);
+		if (!url_result) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+
+		auto search = url_result->get_search();
+		auto params = ParseQueryString(search);
+		std::string name(name_str.GetData(), name_str.GetSize());
+
+		bool found = false;
+		for (const auto &[key, val] : params) {
+			if (key == name) {
+				FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, val);
+				found = true;
+				break;
+			}
+		}
+
+		if (!found) {
+			FlatVector::SetNull(result, i, true);
+		}
+	}
 }
 
 //------------------------------------------------------------------------------
