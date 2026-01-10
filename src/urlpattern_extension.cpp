@@ -59,6 +59,7 @@ struct URLPatternLocalState : public FunctionLocalState {
 		if (key.rfind("init:", 0) == 0) {
 			// Parse the init string back into a url_pattern_init struct
 			ada::url_pattern_init init;
+			bool ignore_case = false;
 			std::string_view remaining(key.data() + 5, key.size() - 5); // Skip "init:"
 
 			while (!remaining.empty()) {
@@ -102,10 +103,16 @@ struct URLPatternLocalState : public FunctionLocalState {
 				case 'F':
 					init.hash = value;
 					break;
+				case 'B':
+					init.base_url = value;
+					break;
+				case 'I':
+					ignore_case = (value == "1");
+					break;
 				}
 			}
 
-			return GetPatternFromInit(init, key);
+			return GetPatternFromInit(init, key, ignore_case);
 		}
 
 		// Check if this is a path-only pattern (starts with / but no protocol)
@@ -129,15 +136,21 @@ struct URLPatternLocalState : public FunctionLocalState {
 	}
 
 	// Get or create a compiled pattern from a url_pattern_init struct
-	shared_ptr<URLPatternType> GetPatternFromInit(const ada::url_pattern_init &init, const string &cache_key) {
+	shared_ptr<URLPatternType> GetPatternFromInit(const ada::url_pattern_init &init, const string &cache_key,
+	                                              bool ignore_case = false) {
 		auto it = cache.find(cache_key);
 		if (it != cache.end()) {
 			return it->second;
 		}
 
-		// Parse using the init struct
+		// Set up options if ignore_case is enabled
+		ada::url_pattern_options options;
+		options.ignore_case = ignore_case;
+		const ada::url_pattern_options *options_ptr = ignore_case ? &options : nullptr;
+
+		// Parse using the init struct (base_url is already in init if provided)
 		auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-		    ada::url_pattern_init(init), nullptr, nullptr);
+		    ada::url_pattern_init(init), nullptr, options_ptr);
 
 		if (!pattern_result) {
 			throw InvalidInputException("Invalid URL pattern components");
@@ -247,6 +260,8 @@ struct UrlpatternInitBindData : public FunctionData {
 	idx_t pathname_idx = DConstants::INVALID_INDEX;
 	idx_t search_idx = DConstants::INVALID_INDEX;
 	idx_t hash_idx = DConstants::INVALID_INDEX;
+	idx_t ignore_case_idx = DConstants::INVALID_INDEX;
+	idx_t base_url_idx = DConstants::INVALID_INDEX;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto copy = make_uniq<UrlpatternInitBindData>();
@@ -258,6 +273,8 @@ struct UrlpatternInitBindData : public FunctionData {
 		copy->pathname_idx = pathname_idx;
 		copy->search_idx = search_idx;
 		copy->hash_idx = hash_idx;
+		copy->ignore_case_idx = ignore_case_idx;
+		copy->base_url_idx = base_url_idx;
 		return copy;
 	}
 
@@ -266,7 +283,8 @@ struct UrlpatternInitBindData : public FunctionData {
 		return protocol_idx == other.protocol_idx && username_idx == other.username_idx &&
 		       password_idx == other.password_idx && hostname_idx == other.hostname_idx &&
 		       port_idx == other.port_idx && pathname_idx == other.pathname_idx && search_idx == other.search_idx &&
-		       hash_idx == other.hash_idx;
+		       hash_idx == other.hash_idx && ignore_case_idx == other.ignore_case_idx &&
+		       base_url_idx == other.base_url_idx;
 	}
 };
 
@@ -293,9 +311,13 @@ static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, Scala
 				bind_data->search_idx = i;
 			} else if (arg->alias == "hash") {
 				bind_data->hash_idx = i;
+			} else if (arg->alias == "ignore_case") {
+				bind_data->ignore_case_idx = i;
+			} else if (arg->alias == "base_url" || arg->alias == "base") {
+				bind_data->base_url_idx = i;
 			} else {
 				throw BinderException("Unknown parameter '%s' for urlpattern_init. Valid parameters: protocol, "
-				                      "username, password, hostname, port, pathname, search, hash",
+				                      "username, password, hostname, port, pathname, search, hash, ignore_case, base_url",
 				                      arg->alias);
 			}
 		}
@@ -305,7 +327,7 @@ static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, Scala
 }
 
 //------------------------------------------------------------------------------
-// urlpattern_init(protocol, username, password, hostname, port, pathname, search, hash) -> URLPATTERN
+// urlpattern_init(protocol, username, password, hostname, port, pathname, search, hash, ignore_case, base_url) -> URLPATTERN
 // Creates a URLPattern from individual components (supports path-only patterns)
 //------------------------------------------------------------------------------
 static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -325,6 +347,25 @@ static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vect
 		return std::string(str.GetData(), str.GetSize());
 	};
 
+	// Helper to get optional bool from argument
+	auto get_optional_bool = [&](idx_t param_idx, idx_t row_idx) -> std::optional<bool> {
+		if (param_idx == DConstants::INVALID_INDEX) {
+			return std::nullopt;
+		}
+		auto &vec = args.data[param_idx];
+		if (FlatVector::IsNull(vec, row_idx)) {
+			return std::nullopt;
+		}
+		// Handle both boolean and string "true"/"false"
+		if (vec.GetType().id() == LogicalTypeId::BOOLEAN) {
+			return FlatVector::GetData<bool>(vec)[row_idx];
+		} else {
+			auto str = FlatVector::GetData<string_t>(vec)[row_idx];
+			std::string s(str.GetData(), str.GetSize());
+			return s == "true" || s == "1" || s == "TRUE";
+		}
+	};
+
 	for (idx_t i = 0; i < args.size(); i++) {
 		// Build the url_pattern_init struct
 		ada::url_pattern_init init;
@@ -336,6 +377,10 @@ static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vect
 		init.pathname = get_optional_string(bind_data.pathname_idx, i);
 		init.search = get_optional_string(bind_data.search_idx, i);
 		init.hash = get_optional_string(bind_data.hash_idx, i);
+		init.base_url = get_optional_string(bind_data.base_url_idx, i);
+
+		// Get ignore_case option
+		bool ignore_case = get_optional_bool(bind_data.ignore_case_idx, i).value_or(false);
 
 		// Build a cache key from the components
 		std::string cache_key = "init:";
@@ -355,9 +400,13 @@ static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vect
 			cache_key += "S=" + *init.search + ";";
 		if (init.hash)
 			cache_key += "F=" + *init.hash + ";";
+		if (init.base_url)
+			cache_key += "B=" + *init.base_url + ";";
+		if (ignore_case)
+			cache_key += "I=1;";
 
 		// Parse the pattern to validate it
-		auto pattern = local_state.GetPatternFromInit(init, cache_key);
+		auto pattern = local_state.GetPatternFromInit(init, cache_key, ignore_case);
 
 		// Return the cache key as the pattern identifier
 		// This allows the pattern to be reused with other functions

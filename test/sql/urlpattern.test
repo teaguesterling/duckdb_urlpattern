@@ -643,3 +643,41 @@ query I
 SELECT url_resolve('https://example.com/docs/guide/', '/api/v1');
 ----
 https://example.com/api/v1
+
+#------------------------------------------------------------------------------
+# Case-Insensitive Matching
+#------------------------------------------------------------------------------
+
+# Case-sensitive by default
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/Users/:id'), 'https://example.com/users/123');
+----
+false
+
+# Case-insensitive matching with ignore_case
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/Users/:id', ignore_case := true), 'https://example.com/users/123');
+----
+true
+
+# Case-insensitive works with hostname too
+query I
+SELECT urlpattern_test(urlpattern_init(hostname := 'EXAMPLE.COM', ignore_case := true), 'https://example.com/path');
+----
+true
+
+# Extract with case-insensitive pattern
+query I
+SELECT urlpattern_extract(urlpattern_init(pathname := '/API/:version/*', ignore_case := true), 'https://example.com/api/v1/users', 'version');
+----
+v1
+
+#------------------------------------------------------------------------------
+# Base URL Support
+#------------------------------------------------------------------------------
+
+# Pattern with base URL
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '../api/*', base_url := 'https://example.com/docs/'), 'https://example.com/api/users');
+----
+true
