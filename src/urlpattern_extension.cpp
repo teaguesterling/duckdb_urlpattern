@@ -143,14 +143,13 @@ struct URLPatternLocalState : public FunctionLocalState {
 			return it->second;
 		}
 
-		// Set up options if ignore_case is enabled
+		// Always set up options explicitly to ensure consistent behavior across platforms
 		ada::url_pattern_options options;
 		options.ignore_case = ignore_case;
-		const ada::url_pattern_options *options_ptr = ignore_case ? &options : nullptr;
 
 		// Parse using the init struct (base_url is already in init if provided)
 		auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-		    ada::url_pattern_init(init), nullptr, options_ptr);
+		    ada::url_pattern_init(init), nullptr, &options);
 
 		if (!pattern_result) {
 			throw InvalidInputException("Invalid URL pattern components");
