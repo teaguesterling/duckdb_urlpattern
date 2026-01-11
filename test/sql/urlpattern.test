@@ -648,10 +648,11 @@ https://example.com/api/v1
 # Case-Insensitive Matching
 #------------------------------------------------------------------------------
 
-# NOTE: Case-sensitive matching test skipped due to platform-specific behavior
-# on some builds (musl). The ignore_case option works correctly for enabling
-# case-insensitive matching, but case-sensitive (default) behavior varies.
-# TODO: Investigate RE2 case-sensitivity behavior on different platforms
+# Case-sensitive by default
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/Users/:id'), 'https://example.com/users/123');
+----
+false
 
 # Case-insensitive matching with ignore_case
 query I

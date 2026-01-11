@@ -47,7 +47,11 @@ public:
 	// Create a regex instance from a pattern string
 	// Returns nullopt if the pattern is invalid
 	static std::optional<regex_type> create_instance(std::string_view pattern, bool ignore_case) {
-		auto options = ignore_case ? duckdb_re2::RegexOptions::CASE_INSENSITIVE : duckdb_re2::RegexOptions::NONE;
+		// NOTE: DuckDB's RE2 wrapper has inverted logic in re2_regex.cpp:27
+		// It does: o.set_case_sensitive(options == RegexOptions::CASE_INSENSITIVE)
+		// This means CASE_INSENSITIVE -> case_sensitive=true (wrong!)
+		// We work around this by swapping the options
+		auto options = ignore_case ? duckdb_re2::RegexOptions::NONE : duckdb_re2::RegexOptions::CASE_INSENSITIVE;
 		try {
 			auto regex = std::make_shared<duckdb_re2::Regex>(std::string(pattern), options);
 			// Check if the pattern compiled successfully
