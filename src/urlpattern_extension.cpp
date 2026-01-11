@@ -1563,7 +1563,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	//        urlpattern_init(protocol := 'https', hostname := '*.example.com', pathname := '/api/*')
 	auto urlpattern_init_func = ScalarFunction("urlpattern_init", {}, urlpattern_type, UrlpatternInitFunction,
 	                                           UrlpatternInitBind, nullptr, nullptr, InitURLPatternLocalState);
-	urlpattern_init_func.varargs = LogicalType::VARCHAR;
+	urlpattern_init_func.varargs = LogicalType::ANY;  // Accept VARCHAR and BOOLEAN parameters
 	urlpattern_init_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	loader.RegisterFunction(urlpattern_init_func);
 
