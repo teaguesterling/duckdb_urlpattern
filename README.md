@@ -8,6 +8,7 @@ A DuckDB extension implementing the [WHATWG URLPattern API](https://urlpattern.s
 - **Pattern Matching** - Test URLs against patterns with wildcards and named groups
 - **Group Extraction** - Extract captured values from URLs
 - **URL Parsing** - Parse URLs into components (protocol, host, path, query, etc.)
+- **URL Building** - Construct and modify URLs from components
 - **Query Parameters** - Extract and parse URL query parameters
 - **URL Resolution** - Resolve relative URLs against base URLs
 - **WHATWG Compliant** - Follows the official URLPattern specification
@@ -109,6 +110,13 @@ make test
 | Function | Description |
 |----------|-------------|
 | `url_resolve(base, relative)` | Resolve relative URL against base |
+
+### URL Building
+
+| Function | Description |
+|----------|-------------|
+| `url_build(...)` | Build URL from named components |
+| `url_modify(url, ...)` | Modify existing URL components |
 
 ## Path-Only Patterns
 
@@ -226,6 +234,71 @@ SELECT url_resolve('https://example.com/docs/', 'getting-started');
 SELECT url_resolve('https://example.com/docs/guide/', '/api/v1');
 -- Returns: 'https://example.com/api/v1'
 ```
+
+## URL Building
+
+Build URLs programmatically from components:
+
+```sql
+-- Build a complete URL
+SELECT url_build(
+    protocol := 'https',
+    hostname := 'api.example.com',
+    port := '8080',
+    pathname := '/users/123',
+    search := 'active=true',
+    hash := 'details'
+);
+-- Returns: 'https://api.example.com:8080/users/123?active=true#details'
+
+-- Build with query parameters as MAP
+SELECT url_build(
+    protocol := 'https',
+    hostname := 'example.com',
+    pathname := '/search',
+    search_params := MAP {'q': 'hello world', 'page': '1'}
+);
+-- Returns: 'https://example.com/search?q=hello%20world&page=1'
+
+-- Build path-only URL (no protocol required)
+SELECT url_build(pathname := '/api/users', search := 'limit=10');
+-- Returns: '/api/users?limit=10'
+```
+
+Modify existing URLs:
+
+```sql
+-- Change protocol
+SELECT url_modify('http://example.com/path', protocol := 'https');
+-- Returns: 'https://example.com/path'
+
+-- Update multiple components
+SELECT url_modify(
+    'https://old.example.com/old/path?q=old',
+    hostname := 'new.example.com',
+    pathname := '/new/path',
+    search_params := MAP {'q': 'new'}
+);
+-- Returns: 'https://new.example.com/new/path?q=new'
+
+-- Preserve components not specified
+SELECT url_modify('https://example.com:8080/path?q=test#hash', pathname := '/newpath');
+-- Returns: 'https://example.com:8080/newpath?q=test#hash'
+```
+
+Available parameters for `url_build` and `url_modify`:
+- `protocol` - URL scheme (e.g., 'https')
+- `hostname` - Host name (e.g., 'example.com')
+- `port` - Port number (e.g., '8080')
+- `pathname` - Path (e.g., '/users/123')
+- `search` - Query string (e.g., 'q=test')
+- `search_params` - Query as MAP (e.g., `MAP {'q': 'test'}`)
+- `hash` - Fragment (e.g., 'section')
+- `username` - Username for authentication
+- `password` - Password for authentication
+- `encode` - URL-encode values (default: true)
+
+Note: `search` and `search_params` are mutually exclusive.
 
 ## Pattern Syntax
 

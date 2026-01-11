@@ -681,3 +681,131 @@ query I
 SELECT urlpattern_test(urlpattern_init(pathname := '../api/*', base_url := 'https://example.com/docs/'), 'https://example.com/api/users');
 ----
 true
+
+#------------------------------------------------------------------------------
+# url_build - Build URLs from components
+#------------------------------------------------------------------------------
+
+# Build a simple URL
+query I
+SELECT url_build(protocol := 'https', hostname := 'example.com', pathname := '/users');
+----
+https://example.com/users
+
+# Build URL with port
+query I
+SELECT url_build(protocol := 'https', hostname := 'example.com', port := '8080', pathname := '/api');
+----
+https://example.com:8080/api
+
+# Build URL with query string
+query I
+SELECT url_build(protocol := 'https', hostname := 'example.com', pathname := '/search', search := 'q=test');
+----
+https://example.com/search?q=test
+
+# Build URL with search_params MAP
+query I
+SELECT url_build(protocol := 'https', hostname := 'example.com', pathname := '/search', search_params := MAP {'q': 'hello', 'page': '1'});
+----
+https://example.com/search?q=hello&page=1
+
+# Build URL with hash
+query I
+SELECT url_build(protocol := 'https', hostname := 'example.com', pathname := '/docs', hash := 'section1');
+----
+https://example.com/docs#section1
+
+# Build URL with credentials
+query I
+SELECT url_build(protocol := 'https', username := 'user', password := 'pass', hostname := 'example.com', pathname := '/');
+----
+https://user:pass@example.com/
+
+# Build path-only (no protocol)
+query I
+SELECT url_build(pathname := '/api/users', search := 'active=true');
+----
+/api/users?active=true
+
+# Build URL with special characters (auto-encoded)
+query I
+SELECT url_build(protocol := 'https', hostname := 'example.com', pathname := '/search', search_params := MAP {'q': 'hello world'});
+----
+https://example.com/search?q=hello%20world
+
+# Build URL with encode := false (no encoding)
+query I
+SELECT url_build(protocol := 'https', hostname := 'example.com', pathname := '/search', search_params := MAP {'q': 'hello world'}, encode := false);
+----
+https://example.com/search?q=hello world
+
+#------------------------------------------------------------------------------
+# url_modify - Modify existing URLs
+#------------------------------------------------------------------------------
+
+# Change protocol
+query I
+SELECT url_modify('http://example.com/path', protocol := 'https');
+----
+https://example.com/path
+
+# Change hostname
+query I
+SELECT url_modify('https://old.example.com/path', hostname := 'new.example.com');
+----
+https://new.example.com/path
+
+# Change pathname
+query I
+SELECT url_modify('https://example.com/old/path', pathname := '/new/path');
+----
+https://example.com/new/path
+
+# Add port
+query I
+SELECT url_modify('https://example.com/path', port := '8443');
+----
+https://example.com:8443/path
+
+# Change search/query string
+query I
+SELECT url_modify('https://example.com/search?old=value', search := 'new=value');
+----
+https://example.com/search?new=value
+
+# Replace search with search_params
+query I
+SELECT url_modify('https://example.com/search?old=value', search_params := MAP {'key': 'val'});
+----
+https://example.com/search?key=val
+
+# Add hash
+query I
+SELECT url_modify('https://example.com/page', hash := 'section');
+----
+https://example.com/page#section
+
+# Modify multiple components
+query I
+SELECT url_modify('http://old.com/old', protocol := 'https', hostname := 'new.com', pathname := '/new');
+----
+https://new.com/new
+
+# Preserve existing components when not specified
+query I
+SELECT url_modify('https://example.com:8080/path?q=test#hash', pathname := '/newpath');
+----
+https://example.com:8080/newpath?q=test#hash
+
+# Add credentials to existing URL
+query I
+SELECT url_modify('https://example.com/api', username := 'admin', password := 'secret');
+----
+https://admin:secret@example.com/api
+
+# Clear search by setting empty string
+query I
+SELECT url_modify('https://example.com/path?q=test', search := '');
+----
+https://example.com/path
