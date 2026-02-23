@@ -148,8 +148,8 @@ struct URLPatternLocalState : public FunctionLocalState {
 		options.ignore_case = ignore_case;
 
 		// Parse using the init struct (base_url is already in init if provided)
-		auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-		    ada::url_pattern_init(init), nullptr, &options);
+		auto pattern_result =
+		    ada::parse_url_pattern<DuckDBRe2RegexProvider>(ada::url_pattern_init(init), nullptr, &options);
 
 		if (!pattern_result) {
 			throw InvalidInputException("Invalid URL pattern components");
@@ -204,8 +204,8 @@ static bool ValidateUrlpattern(const string_t &pattern_str) {
 	if (IsPathOnlyPatternStatic(pattern)) {
 		ada::url_pattern_init init;
 		init.pathname = pattern;
-		auto pattern_result = ada::parse_url_pattern<DuckDBRe2RegexProvider>(
-		    ada::url_pattern_init(init), nullptr, nullptr);
+		auto pattern_result =
+		    ada::parse_url_pattern<DuckDBRe2RegexProvider>(ada::url_pattern_init(init), nullptr, nullptr);
 		return pattern_result.has_value();
 	}
 
@@ -280,10 +280,9 @@ struct UrlpatternInitBindData : public FunctionData {
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<UrlpatternInitBindData>();
 		return protocol_idx == other.protocol_idx && username_idx == other.username_idx &&
-		       password_idx == other.password_idx && hostname_idx == other.hostname_idx &&
-		       port_idx == other.port_idx && pathname_idx == other.pathname_idx && search_idx == other.search_idx &&
-		       hash_idx == other.hash_idx && ignore_case_idx == other.ignore_case_idx &&
-		       base_url_idx == other.base_url_idx;
+		       password_idx == other.password_idx && hostname_idx == other.hostname_idx && port_idx == other.port_idx &&
+		       pathname_idx == other.pathname_idx && search_idx == other.search_idx && hash_idx == other.hash_idx &&
+		       ignore_case_idx == other.ignore_case_idx && base_url_idx == other.base_url_idx;
 	}
 };
 
@@ -315,9 +314,10 @@ static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, Scala
 			} else if (arg->alias == "base_url" || arg->alias == "base") {
 				bind_data->base_url_idx = i;
 			} else {
-				throw BinderException("Unknown parameter '%s' for urlpattern_init. Valid parameters: protocol, "
-				                      "username, password, hostname, port, pathname, search, hash, ignore_case, base_url",
-				                      arg->alias);
+				throw BinderException(
+				    "Unknown parameter '%s' for urlpattern_init. Valid parameters: protocol, "
+				    "username, password, hostname, port, pathname, search, hash, ignore_case, base_url",
+				    arg->alias);
 			}
 		}
 	}
@@ -326,8 +326,8 @@ static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, Scala
 }
 
 //------------------------------------------------------------------------------
-// urlpattern_init(protocol, username, password, hostname, port, pathname, search, hash, ignore_case, base_url) -> URLPATTERN
-// Creates a URLPattern from individual components (supports path-only patterns)
+// urlpattern_init(protocol, username, password, hostname, port, pathname, search, hash, ignore_case, base_url) ->
+// URLPATTERN Creates a URLPattern from individual components (supports path-only patterns)
 //------------------------------------------------------------------------------
 static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<UrlpatternInitBindData>();
@@ -739,7 +739,7 @@ static LogicalType GetUrlpatternExecReturnType() {
 
 // Helper to parse a URL and return the result
 static tl::expected<ada::url_aggregator, ada::errors> ParseUrl(const string_t &url_str,
-                                                                const string_t *base_url_str = nullptr) {
+                                                               const string_t *base_url_str = nullptr) {
 	std::string_view url_view(url_str.GetData(), url_str.GetSize());
 
 	if (base_url_str) {
@@ -1167,8 +1167,8 @@ struct UrlBuildBindData : public FunctionData {
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<UrlBuildBindData>();
 		return url_idx == other.url_idx && protocol_idx == other.protocol_idx && username_idx == other.username_idx &&
-		       password_idx == other.password_idx && hostname_idx == other.hostname_idx &&
-		       port_idx == other.port_idx && pathname_idx == other.pathname_idx && search_idx == other.search_idx &&
+		       password_idx == other.password_idx && hostname_idx == other.hostname_idx && port_idx == other.port_idx &&
+		       pathname_idx == other.pathname_idx && search_idx == other.search_idx &&
 		       search_params_idx == other.search_params_idx && hash_idx == other.hash_idx &&
 		       encode_idx == other.encode_idx && is_modify == other.is_modify;
 	}
@@ -1258,9 +1258,10 @@ static unique_ptr<FunctionData> UrlBuildBind(ClientContext &context, ScalarFunct
 			} else if (arg->alias == "encode") {
 				bind_data->encode_idx = i;
 			} else {
-				throw BinderException("Unknown parameter '%s' for url_build. Valid parameters: protocol, "
-				                      "username, password, hostname, port, pathname, search, search_params, hash, encode",
-				                      arg->alias);
+				throw BinderException(
+				    "Unknown parameter '%s' for url_build. Valid parameters: protocol, "
+				    "username, password, hostname, port, pathname, search, search_params, hash, encode",
+				    arg->alias);
 			}
 		}
 	}
@@ -1563,7 +1564,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	//        urlpattern_init(protocol := 'https', hostname := '*.example.com', pathname := '/api/*')
 	auto urlpattern_init_func = ScalarFunction("urlpattern_init", {}, urlpattern_type, UrlpatternInitFunction,
 	                                           UrlpatternInitBind, nullptr, nullptr, InitURLPatternLocalState);
-	urlpattern_init_func.varargs = LogicalType::ANY;  // Accept VARCHAR and BOOLEAN parameters
+	urlpattern_init_func.varargs = LogicalType::ANY; // Accept VARCHAR and BOOLEAN parameters
 	urlpattern_init_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	loader.RegisterFunction(urlpattern_init_func);
 
@@ -1628,26 +1629,22 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Individual component functions
 	loader.RegisterFunction(
 	    ScalarFunction("url_protocol", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlProtocolFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_host", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostFunction));
+	loader.RegisterFunction(ScalarFunction("url_host", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostFunction));
 	loader.RegisterFunction(
 	    ScalarFunction("url_hostname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostnameFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_port", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPortFunction));
+	loader.RegisterFunction(ScalarFunction("url_port", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPortFunction));
 	loader.RegisterFunction(
 	    ScalarFunction("url_pathname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPathnameFunction));
 	loader.RegisterFunction(
 	    ScalarFunction("url_search", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlSearchFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_hash", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHashFunction));
+	loader.RegisterFunction(ScalarFunction("url_hash", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHashFunction));
 	loader.RegisterFunction(
 	    ScalarFunction("url_username", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlUsernameFunction));
 	loader.RegisterFunction(
 	    ScalarFunction("url_password", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPasswordFunction));
 	loader.RegisterFunction(
 	    ScalarFunction("url_origin", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlOriginFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_href", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHrefFunction));
+	loader.RegisterFunction(ScalarFunction("url_href", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHrefFunction));
 	loader.RegisterFunction(
 	    ScalarFunction("url_valid", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, UrlValidFunction));
 
