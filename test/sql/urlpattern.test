@@ -809,3 +809,53 @@ query I
 SELECT url_modify('https://example.com/path?q=test', search := '');
 ----
 https://example.com/path
+
+#------------------------------------------------------------------------------
+# Regression: query params are percent-decoded (issue #5, WHATWG URLSearchParams)
+#------------------------------------------------------------------------------
+
+# %XX sequences are decoded in values
+query I
+SELECT url_search_params('https://example.com?q=hello%20world')['q'];
+----
+hello world
+
+# '+' decodes to a space (application/x-www-form-urlencoded)
+query I
+SELECT url_search_param('https://example.com?q=hello+world', 'q');
+----
+hello world
+
+# An encoded delimiter (%26 = '&') stays part of the value, decoded
+query I
+SELECT url_search_param('https://example.com?name=a%26b&other=1', 'name');
+----
+a&b
+
+# Keys are decoded too, so lookups use the decoded name
+query I
+SELECT url_search_params('https://example.com?first%20name=Jane')['first name'];
+----
+Jane
+
+#------------------------------------------------------------------------------
+# Regression: init: values containing ';' round-trip (issue #5, no truncation)
+#------------------------------------------------------------------------------
+
+# A ';' in a pathname value survives serialize/reparse (previously truncated to '/a')
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a;b'), 'https://example.com/a;b');
+----
+true
+
+# ...and the full value is required: the ';'-containing pattern must NOT match '/a'
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a;b'), 'https://example.com/a');
+----
+false
+
+# Extraction still works alongside a literal ';' in the pattern
+query I
+SELECT urlpattern_extract(urlpattern_init(pathname := '/x;:id'), 'https://example.com/x;42', 'id');
+----
+42

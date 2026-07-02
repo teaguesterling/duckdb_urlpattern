@@ -16,10 +16,28 @@
 // Include Ada headers - use the main header which includes everything in correct order
 #include <ada.h>
 
+#include <algorithm>
+
 namespace duckdb {
 
 // Type alias for our URLPattern with DuckDB's RE2 provider
 using URLPatternType = ada::url_pattern<DuckDBRe2RegexProvider>;
+
+// Serialize a component value into the "init:X=value;" cache-key encoding used by
+// urlpattern_init. The value is the user-visible URLPATTERN handle and is later
+// re-parsed by scanning for the ';' delimiter, so ';' (and the escape char '\')
+// must be escaped or a value containing ';' would be silently truncated.
+static std::string EscapeInitValue(std::string_view v) {
+	std::string out;
+	out.reserve(v.size());
+	for (char c : v) {
+		if (c == '\\' || c == ';') {
+			out += '\\';
+		}
+		out += c;
+	}
+	return out;
+}
 
 //------------------------------------------------------------------------------
 // Pattern Cache - Local state for caching compiled patterns
@@ -71,12 +89,27 @@ struct URLPatternLocalState : public FunctionLocalState {
 				char component = remaining[0];
 				remaining.remove_prefix(eq_pos + 1);
 
-				auto semi_pos = remaining.find(';');
-				if (semi_pos == std::string_view::npos)
+				// Extract the value up to the next UNescaped ';', reversing the
+				// escaping applied by EscapeInitValue so ';' in a value survives.
+				std::string value;
+				size_t j = 0;
+				bool terminated = false;
+				while (j < remaining.size()) {
+					char c = remaining[j];
+					if (c == '\\' && j + 1 < remaining.size()) {
+						value += remaining[j + 1];
+						j += 2;
+					} else if (c == ';') {
+						terminated = true;
+						break;
+					} else {
+						value += c;
+						j++;
+					}
+				}
+				if (!terminated)
 					break;
-
-				std::string value(remaining.substr(0, semi_pos));
-				remaining.remove_prefix(semi_pos + 1);
+				remaining.remove_prefix(j + 1);
 
 				switch (component) {
 				case 'P':
@@ -119,7 +152,7 @@ struct URLPatternLocalState : public FunctionLocalState {
 		if (IsPathOnlyPattern(key)) {
 			ada::url_pattern_init init;
 			init.pathname = key;
-			return GetPatternFromInit(init, "init:A=" + key + ";");
+			return GetPatternFromInit(init, "init:A=" + EscapeInitValue(key) + ";");
 		}
 
 		// Parse as a regular URL pattern string
@@ -384,23 +417,23 @@ static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vect
 		// Build a cache key from the components
 		std::string cache_key = "init:";
 		if (init.protocol)
-			cache_key += "P=" + *init.protocol + ";";
+			cache_key += "P=" + EscapeInitValue(*init.protocol) + ";";
 		if (init.username)
-			cache_key += "U=" + *init.username + ";";
+			cache_key += "U=" + EscapeInitValue(*init.username) + ";";
 		if (init.password)
-			cache_key += "W=" + *init.password + ";";
+			cache_key += "W=" + EscapeInitValue(*init.password) + ";";
 		if (init.hostname)
-			cache_key += "H=" + *init.hostname + ";";
+			cache_key += "H=" + EscapeInitValue(*init.hostname) + ";";
 		if (init.port)
-			cache_key += "O=" + *init.port + ";";
+			cache_key += "O=" + EscapeInitValue(*init.port) + ";";
 		if (init.pathname)
-			cache_key += "A=" + *init.pathname + ";";
+			cache_key += "A=" + EscapeInitValue(*init.pathname) + ";";
 		if (init.search)
-			cache_key += "S=" + *init.search + ";";
+			cache_key += "S=" + EscapeInitValue(*init.search) + ";";
 		if (init.hash)
-			cache_key += "F=" + *init.hash + ";";
+			cache_key += "F=" + EscapeInitValue(*init.hash) + ";";
 		if (init.base_url)
-			cache_key += "B=" + *init.base_url + ";";
+			cache_key += "B=" + EscapeInitValue(*init.base_url) + ";";
 		if (ignore_case)
 			cache_key += "I=1;";
 
@@ -988,7 +1021,19 @@ static void UrlParseFunction(DataChunk &args, ExpressionState &state, Vector &re
 // Query Parameter Parsing
 //------------------------------------------------------------------------------
 
-// Helper to parse query string into key-value pairs
+// Apply the WHATWG application/x-www-form-urlencoded decode to a component:
+// '+' becomes a space, then %XX sequences are percent-decoded. This matches
+// URLSearchParams semantics (and ada's own url_search_params parser).
+static std::string DecodeFormComponent(std::string_view raw) {
+	std::string s(raw);
+	std::replace(s.begin(), s.end(), '+', ' ');
+	// ada::unicode::percent_decode is safe to call with npos when there is no '%'
+	// (it returns the input unchanged) - this mirrors ada's own usage.
+	return ada::unicode::percent_decode(s, s.find('%'));
+}
+
+// Helper to parse query string into key-value pairs.
+// Keys and values are percent-decoded per WHATWG URLSearchParams rules.
 static vector<pair<string, string>> ParseQueryString(std::string_view query) {
 	vector<pair<string, string>> params;
 
@@ -1007,9 +1052,10 @@ static vector<pair<string, string>> ParseQueryString(std::string_view query) {
 			auto eq_pos = param.find('=');
 			if (eq_pos == std::string_view::npos) {
 				// Key only, no value
-				params.emplace_back(std::string(param), "");
+				params.emplace_back(DecodeFormComponent(param), "");
 			} else {
-				params.emplace_back(std::string(param.substr(0, eq_pos)), std::string(param.substr(eq_pos + 1)));
+				params.emplace_back(DecodeFormComponent(param.substr(0, eq_pos)),
+				                    DecodeFormComponent(param.substr(eq_pos + 1)));
 			}
 		}
 
