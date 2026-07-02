@@ -211,6 +211,27 @@ The `*` wildcard is greedy and matches as much as possible:
 SELECT urlpattern_test('https://example.com/*', 'https://example.com/a/b/c');  -- true
 ```
 
+### Regex Groups and the RE2 Engine
+
+Custom regex groups (e.g. `(\d+)`) are compiled with the **RE2** engine. RE2 uses a
+finite-automaton matcher that guarantees linear-time matching, which makes this
+extension immune to regular-expression denial-of-service (ReDoS) — a crafted pattern
+or input cannot blow up matching time.
+
+The tradeoff is that RE2 deliberately does **not** support the two regex features that
+enable that blow-up: **backreferences** (`\1`) and **lookahead/lookbehind**
+(`(?=...)`, `(?<=...)`). A pattern whose custom group uses those JS-only features is
+rejected as an invalid pattern rather than matched. This is an intentional limitation,
+not a bug: the safety guarantee is the reason the feature is absent.
+
+```sql
+-- Works: linear-time regex group
+SELECT urlpattern_test('/item/(\d+)', 'https://example.com/item/42');  -- true
+
+-- Rejected: lookahead is not supported by RE2
+-- SELECT urlpattern_test('/item/(?=\d)', 'https://example.com/item/42');  -- error
+```
+
 ## Best Practices
 
 1. **Use full URL patterns** for `urlpattern_test` to ensure all components are matched:

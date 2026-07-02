@@ -17,6 +17,7 @@
 #include <ada.h>
 
 #include <algorithm>
+#include <list>
 
 namespace duckdb {
 
@@ -42,9 +43,59 @@ static std::string EscapeInitValue(std::string_view v) {
 //------------------------------------------------------------------------------
 // Pattern Cache - Local state for caching compiled patterns
 //------------------------------------------------------------------------------
+
+// Bounded LRU cache mapping pattern/handle strings to compiled patterns. Caps memory
+// so a query using many distinct patterns cannot grow the cache without bound
+// (finding #4). Eviction is safe: callers receive a shared_ptr copy, so evicting an
+// entry never invalidates a pattern that is still in use.
+class LruPatternCache {
+public:
+	static constexpr idx_t DEFAULT_CAPACITY = 1024;
+
+	explicit LruPatternCache(idx_t capacity = DEFAULT_CAPACITY) : capacity_(capacity) {
+	}
+
+	// Return the cached pattern and mark it most-recently-used, or nullptr on miss.
+	shared_ptr<URLPatternType> Get(const string &key) {
+		auto it = index_.find(key);
+		if (it == index_.end()) {
+			return nullptr;
+		}
+		// splice moves the node to the front without invalidating iterators.
+		entries_.splice(entries_.begin(), entries_, it->second);
+		return it->second->second;
+	}
+
+	void Put(const string &key, shared_ptr<URLPatternType> value) {
+		auto it = index_.find(key);
+		if (it != index_.end()) {
+			it->second->second = std::move(value);
+			entries_.splice(entries_.begin(), entries_, it->second);
+			return;
+		}
+		entries_.emplace_front(key, std::move(value));
+		index_[key] = entries_.begin();
+		if (index_.size() > capacity_) {
+			// Evict the least-recently-used entry (back of the list).
+			index_.erase(entries_.back().first);
+			entries_.pop_back();
+		}
+	}
+
+private:
+	idx_t capacity_;
+	// front = most-recently-used, back = least-recently-used
+	std::list<std::pair<string, shared_ptr<URLPatternType>>> entries_;
+	unordered_map<string, std::list<std::pair<string, shared_ptr<URLPatternType>>>::iterator> index_;
+};
+
 struct URLPatternLocalState : public FunctionLocalState {
-	// Cache of compiled patterns keyed by pattern string
-	unordered_map<string, shared_ptr<URLPatternType>> cache;
+	// Reject absurdly long pattern strings up front: a DoS backstop, not a validator.
+	// No legitimate URL pattern approaches this size.
+	static constexpr idx_t MAX_PATTERN_LENGTH = 1u << 20; // 1 MiB
+
+	// Bounded cache of compiled patterns keyed by pattern string / init handle.
+	LruPatternCache cache;
 
 	// Check if a pattern string looks like a path-only pattern
 	// Returns true for patterns starting with / that don't look like full URLs
@@ -66,11 +117,15 @@ struct URLPatternLocalState : public FunctionLocalState {
 	// - Path-only patterns (e.g., "/users/:id") - auto-detected
 	// - File URLs (e.g., "file:///path/to/file")
 	shared_ptr<URLPatternType> GetPattern(const string_t &pattern_str) {
+		if (pattern_str.GetSize() > MAX_PATTERN_LENGTH) {
+			throw InvalidInputException("URL pattern exceeds the maximum length of %llu bytes",
+			                            (unsigned long long)MAX_PATTERN_LENGTH);
+		}
+
 		string key(pattern_str.GetData(), pattern_str.GetSize());
 
-		auto it = cache.find(key);
-		if (it != cache.end()) {
-			return it->second;
+		if (auto hit = cache.Get(key)) {
+			return hit;
 		}
 
 		// Check if this is an init-based pattern (created by urlpattern_init)
@@ -164,16 +219,15 @@ struct URLPatternLocalState : public FunctionLocalState {
 		}
 
 		auto pattern_ptr = make_shared_ptr<URLPatternType>(std::move(pattern_result.value()));
-		cache[key] = pattern_ptr;
+		cache.Put(key, pattern_ptr);
 		return pattern_ptr;
 	}
 
 	// Get or create a compiled pattern from a url_pattern_init struct
 	shared_ptr<URLPatternType> GetPatternFromInit(const ada::url_pattern_init &init, const string &cache_key,
 	                                              bool ignore_case = false) {
-		auto it = cache.find(cache_key);
-		if (it != cache.end()) {
-			return it->second;
+		if (auto hit = cache.Get(cache_key)) {
+			return hit;
 		}
 
 		// Always set up options explicitly to ensure consistent behavior across platforms
@@ -189,7 +243,7 @@ struct URLPatternLocalState : public FunctionLocalState {
 		}
 
 		auto pattern_ptr = make_shared_ptr<URLPatternType>(std::move(pattern_result.value()));
-		cache[cache_key] = pattern_ptr;
+		cache.Put(cache_key, pattern_ptr);
 		return pattern_ptr;
 	}
 };
@@ -485,9 +539,13 @@ static void UrlpatternExtractFunction(DataChunk &args, ExpressionState &state, V
 	// Get the local state with pattern cache
 	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
-	TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+	// ExecuteWithNulls lets us return SQL NULL (via the validity mask) rather than an
+	// empty string, so callers can distinguish three outcomes:
+	//   - no match / group absent -> NULL
+	//   - group matched an empty value -> '' (empty string)
+	TernaryExecutor::ExecuteWithNulls<string_t, string_t, string_t, string_t>(
 	    pattern_vector, url_vector, group_vector, result, args.size(),
-	    [&](string_t pattern_str, string_t url_str, string_t group_str) {
+	    [&](string_t pattern_str, string_t url_str, string_t group_str, ValidityMask &mask, idx_t idx) -> string_t {
 		    // Get cached pattern (or parse and cache if not found)
 		    auto pattern = local_state.GetPattern(pattern_str);
 
@@ -502,7 +560,8 @@ static void UrlpatternExtractFunction(DataChunk &args, ExpressionState &state, V
 
 		    const auto &match_opt = exec_result.value();
 		    if (!match_opt.has_value()) {
-			    // No match - return NULL
+			    // No match -> NULL
+			    mask.SetInvalid(idx);
 			    return string_t();
 		    }
 
@@ -511,7 +570,8 @@ static void UrlpatternExtractFunction(DataChunk &args, ExpressionState &state, V
 		    // Get the group name
 		    std::string group_name(group_str.GetData(), group_str.GetSize());
 
-		    // Helper to check a component for the group
+		    // Helper to check a component for the group. A present-but-empty group
+		    // yields optional{""} (distinct from an absent group -> nullopt).
 		    auto check_component = [&](const auto &component) -> std::optional<std::string> {
 			    auto iter = component.groups.find(group_name);
 			    if (iter != component.groups.end() && iter->second.has_value()) {
@@ -540,7 +600,8 @@ static void UrlpatternExtractFunction(DataChunk &args, ExpressionState &state, V
 			    return StringVector::AddString(result, *val);
 		    }
 
-		    // Group not found
+		    // Matched, but the group is absent from every component -> NULL
+		    mask.SetInvalid(idx);
 		    return string_t();
 	    });
 }
@@ -1590,7 +1651,37 @@ static void UrlModifyFunction(DataChunk &args, ExpressionState &state, Vector &r
 //------------------------------------------------------------------------------
 // Extension loading
 //------------------------------------------------------------------------------
+// Self-test guarding the case-sensitivity workaround in
+// DuckDBRe2RegexProvider::create_instance, which deliberately SWAPS RegexOptions to
+// compensate for an inverted set_case_sensitive in DuckDB's re2_regex.cpp. If DuckDB
+// ever fixes that inversion upstream, the swap would silently invert ignore_case.
+// Verify the assumption at load so it can never regress silently.
+static void VerifyCaseSensitivityAssumption() {
+	using Provider = DuckDBRe2RegexProvider;
+
+	auto ci = Provider::create_instance("a", /*ignore_case=*/true);
+	auto cs = Provider::create_instance("a", /*ignore_case=*/false);
+	if (!ci || !cs) {
+		throw InternalException("urlpattern: case-sensitivity self-test could not compile its probe patterns");
+	}
+
+	// Full-match "a" against "A": true iff case-insensitive.
+	const bool ci_matches_upper = Provider::regex_match("A", *ci); // expect true
+	const bool cs_matches_upper = Provider::regex_match("A", *cs); // expect false
+
+	if (!ci_matches_upper || cs_matches_upper) {
+		throw InternalException(
+		    "urlpattern: case-sensitivity assumption broken (ignore_case now behaves inverted). "
+		    "DuckDB's set_case_sensitive inversion (re2_regex.cpp) appears fixed upstream; remove the "
+		    "RegexOptions swap in DuckDBRe2RegexProvider::create_instance "
+		    "(src/include/duckdb_re2_regex_provider.hpp).");
+	}
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
+	// Fail loudly if the RE2 case-sensitivity workaround assumption no longer holds.
+	VerifyCaseSensitivityAssumption();
+
 	// Get the URLPATTERN type
 	auto urlpattern_type = UrlpatternType();
 

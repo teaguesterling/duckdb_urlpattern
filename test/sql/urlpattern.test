@@ -859,3 +859,56 @@ query I
 SELECT urlpattern_extract(urlpattern_init(pathname := '/x;:id'), 'https://example.com/x;42', 'id');
 ----
 42
+
+#------------------------------------------------------------------------------
+# Regression: urlpattern_extract distinguishes NULL vs empty string (issue #5.5)
+#------------------------------------------------------------------------------
+
+# No match -> NULL
+query I
+SELECT urlpattern_extract('https://example.com/users/:id', 'https://example.com/other', 'id') IS NULL;
+----
+true
+
+# Matched, but the requested group is absent -> NULL
+query I
+SELECT urlpattern_extract('https://example.com/users/:id', 'https://example.com/users/123', 'nope') IS NULL;
+----
+true
+
+# NULL argument propagates to NULL
+query I
+SELECT urlpattern_extract(NULL, 'https://example.com/users/123', 'id') IS NULL;
+----
+true
+
+# Matched with an EMPTY value -> '' (empty string), NOT NULL: '*' matches the empty tail
+query I
+SELECT urlpattern_extract('https://example.com/api/*', 'https://example.com/api/', '0');
+----
+(empty)
+
+query I
+SELECT urlpattern_extract('https://example.com/api/*', 'https://example.com/api/', '0') IS NULL;
+----
+false
+
+#------------------------------------------------------------------------------
+# Regression: bounded pattern cache + length guard (issue #5.4)
+#------------------------------------------------------------------------------
+
+# Absurdly long patterns are rejected (DoS backstop, > 1 MiB)
+statement error
+SELECT urlpattern_test(repeat('/a', 600000), 'https://example.com/a');
+----
+exceeds the maximum length
+
+# The LRU cache stays correct across far more distinct patterns than its capacity
+# (3000 distinct patterns > 1024 cap forces eviction); every match must still hold.
+query I
+SELECT count(*) FROM (
+    SELECT urlpattern_test('/p' || i || '/:id', 'https://example.com/p' || i || '/42') AS ok
+    FROM range(3000) t(i)
+) WHERE ok;
+----
+3000

@@ -45,7 +45,15 @@ public:
 	using regex_type = Re2RegexWrapper;
 
 	// Create a regex instance from a pattern string
-	// Returns nullopt if the pattern is invalid
+	// Returns nullopt if the pattern is invalid.
+	//
+	// NOTE: patterns are compiled with RE2, which by design does NOT support
+	// backreferences or lookahead/lookbehind. This is intentional: RE2's
+	// finite-automaton engine guarantees linear-time matching, so the extension is
+	// immune to regular-expression denial-of-service (ReDoS). The tradeoff is that a
+	// custom regex group using those JS-only features (e.g. "(?=...)" or "\\1") is
+	// rejected as an invalid pattern rather than matched. This is a documented
+	// limitation, not a bug.
 	static std::optional<regex_type> create_instance(std::string_view pattern, bool ignore_case) {
 		// NOTE: DuckDB's RE2 wrapper has inverted logic in re2_regex.cpp:27
 		// It does: o.set_case_sensitive(options == RegexOptions::CASE_INSENSITIVE)
