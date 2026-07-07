@@ -912,3 +912,86 @@ SELECT count(*) FROM (
 ) WHERE ok;
 ----
 3000
+
+#------------------------------------------------------------------------------
+# Regression (added coverage): adversarial edge cases for the issue #5 fixes.
+# The two fixes (query-param percent-decoding + init: ';' escaping) landed in
+# 740ab52. These cases were confirmed RED on the parent 740ab52~1 (params came
+# back %-encoded; '/a;b' truncated to '/a') and GREEN here. They assert observable
+# behavior only, never the internal 'init:...' handle encoding (a leaky abstraction).
+#------------------------------------------------------------------------------
+
+# --- percent-decode: order of operations (WHATWG: '+'->space FIRST, then %XX) ---
+
+# '%2B' must decode to a literal '+', NOT to a space: proves percent-decoding does
+# not re-interpret the '+' it produces, and that '+'->space runs before %-decode.
+query I
+SELECT url_search_params('https://example.com?a%2Bb=1')['a+b'];
+----
+1
+
+# A key encoded with '+' decodes to a space in the key too (lookup uses decoded name).
+query I
+SELECT url_search_params('https://example.com?a+b=1')['a b'];
+----
+1
+
+# --- init: ';' escaping: values with MULTIPLE ';' round-trip (no truncation) ---
+
+# Two ';' in one value both survive; the whole value is required to match.
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a;b;c'), 'https://example.com/a;b;c');
+----
+true
+
+# ...and a prefix truncated at the first ';' must NOT match (guards against regression
+# to the old scan-to-first-';' bug).
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a;b;c'), 'https://example.com/a;b');
+----
+false
+
+# --- init: ';' escaping: escaped ';' inside a component must not leak across the
+# component delimiter. pathname and hash each carry a ';'; the parser must split
+# only on the UNescaped delimiter between components. ---
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a;b', hash := 'x;y'), 'https://example.com/a;b#x;y');
+----
+true
+
+# Negative: if the pathname's ';' had leaked/truncated, '/a' would wrongly match.
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a;b', hash := 'x;y'), 'https://example.com/a#x;y');
+----
+false
+
+# --- init: ';' escaping: escape-at-end edge (value ending in ';'), across two
+# components that both end in ';' (serialized as 'A=/a\;;S=b\;;'). ---
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a;', search := 'b;'), 'https://example.com/a;?b;');
+----
+true
+
+# --- init: ';' escaping: a ';' in the SEARCH component (a different serialize site
+# than pathname) also round-trips. ---
+query I
+SELECT urlpattern_test(urlpattern_init(search := 'a;b'), 'https://example.com/?a;b');
+----
+true
+
+# --- init: backslash codec: a URLPattern pattern that itself contains an escape
+# ('/a\;b', where '\;' is URLPattern's own escaped ';') must survive the init
+# serialization's '\'-escaping and still match the literal ';'. This exercises the
+# EscapeInitValue '\'->'\\' path (a lone trailing '\' is a URLPattern dangling-escape
+# error, orthogonal to this codec, so it is intentionally not asserted here). ---
+query I
+SELECT urlpattern_test(urlpattern_init(pathname := '/a\;b'), 'https://example.com/a;b');
+----
+true
+
+# --- init: ';' escaping: extraction still works when literal ';'s precede a named
+# group in the pattern. ---
+query I
+SELECT urlpattern_extract(urlpattern_init(pathname := '/x;y;:id'), 'https://example.com/x;y;42', 'id');
+----
+42
