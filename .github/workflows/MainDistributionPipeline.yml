@@ -12,7 +12,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Forward-compat leg: intentionally builds against duckdb `main`. Expected to be
+  # red on upstream API drift (e.g. ScalarFunction::init_local_state removed,
+  # BaseExpression::alias protected, bind_scalar_function_t change). This is NOT a
+  # merge gate; it is an early-warning signal for the next stable line.
   duckdb-next-build:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+    with:
+      duckdb_version: main
+      ci_tools_version: main
+      extension_name: urlpattern
+      vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
+      # Windows re-enabled (drop windows_amd64 + windows_amd64_mingw excludes)
+      # Exclude WASM: emscripten clang 20.0 still crashes (SIGSEGV) on ada-url C++20 templates
+      exclude_archs: 'wasm_threads;wasm_eh;wasm_mvp'
+
+  # Stable leg: tracks the pinned v1.5-variegata submodule. This is the merge gate.
+  duckdb-stable-build:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
@@ -20,18 +37,6 @@ jobs:
       ci_tools_version: v1.5-variegata
       extension_name: urlpattern
       vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
-      # Windows re-enabled (see if v1.5-variegata toolchain resolves the prior MinGW constexpr issue with ada-url std::string)
-      # Exclude WASM: emscripten clang 20.0 still crashes (SIGSEGV) on ada-url C++20 templates
-      exclude_archs: 'wasm_threads;wasm_eh;wasm_mvp'
-
-  duckdb-stable-build:
-    name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4-andium
-    with:
-      duckdb_version: v1.4-andium
-      ci_tools_version: v1.4-andium
-      extension_name: urlpattern
-      vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
-      # Windows re-enabled (see if v1.5-variegata toolchain resolves the prior MinGW constexpr issue with ada-url std::string)
+      # Windows re-enabled (drop windows_amd64 + windows_amd64_mingw excludes)
       # Exclude WASM: emscripten clang 20.0 still crashes (SIGSEGV) on ada-url C++20 templates
       exclude_archs: 'wasm_threads;wasm_eh;wasm_mvp'
