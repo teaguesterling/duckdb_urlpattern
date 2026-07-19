@@ -379,32 +379,32 @@ static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, Scala
 
 	for (idx_t i = 0; i < arguments.size(); i++) {
 		auto &arg = arguments[i];
-		if (!arg->alias.empty()) {
-			if (arg->alias == "protocol") {
+		if (!arg->GetAlias().empty()) {
+			if (arg->GetAlias() == "protocol") {
 				bind_data->protocol_idx = i;
-			} else if (arg->alias == "username") {
+			} else if (arg->GetAlias() == "username") {
 				bind_data->username_idx = i;
-			} else if (arg->alias == "password") {
+			} else if (arg->GetAlias() == "password") {
 				bind_data->password_idx = i;
-			} else if (arg->alias == "hostname") {
+			} else if (arg->GetAlias() == "hostname") {
 				bind_data->hostname_idx = i;
-			} else if (arg->alias == "port") {
+			} else if (arg->GetAlias() == "port") {
 				bind_data->port_idx = i;
-			} else if (arg->alias == "pathname") {
+			} else if (arg->GetAlias() == "pathname") {
 				bind_data->pathname_idx = i;
-			} else if (arg->alias == "search") {
+			} else if (arg->GetAlias() == "search") {
 				bind_data->search_idx = i;
-			} else if (arg->alias == "hash") {
+			} else if (arg->GetAlias() == "hash") {
 				bind_data->hash_idx = i;
-			} else if (arg->alias == "ignore_case") {
+			} else if (arg->GetAlias() == "ignore_case") {
 				bind_data->ignore_case_idx = i;
-			} else if (arg->alias == "base_url" || arg->alias == "base") {
+			} else if (arg->GetAlias() == "base_url" || arg->GetAlias() == "base") {
 				bind_data->base_url_idx = i;
 			} else {
 				throw BinderException(
 				    "Unknown parameter '%s' for urlpattern_init. Valid parameters: protocol, "
 				    "username, password, hostname, port, pathname, search, hash, ignore_case, base_url",
-				    arg->alias);
+				    arg->GetAlias());
 			}
 		}
 	}
@@ -1343,32 +1343,32 @@ static unique_ptr<FunctionData> UrlBuildBind(ClientContext &context, ScalarFunct
 
 	for (idx_t i = 0; i < arguments.size(); i++) {
 		auto &arg = arguments[i];
-		if (!arg->alias.empty()) {
-			if (arg->alias == "protocol") {
+		if (!arg->GetAlias().empty()) {
+			if (arg->GetAlias() == "protocol") {
 				bind_data->protocol_idx = i;
-			} else if (arg->alias == "username") {
+			} else if (arg->GetAlias() == "username") {
 				bind_data->username_idx = i;
-			} else if (arg->alias == "password") {
+			} else if (arg->GetAlias() == "password") {
 				bind_data->password_idx = i;
-			} else if (arg->alias == "hostname") {
+			} else if (arg->GetAlias() == "hostname") {
 				bind_data->hostname_idx = i;
-			} else if (arg->alias == "port") {
+			} else if (arg->GetAlias() == "port") {
 				bind_data->port_idx = i;
-			} else if (arg->alias == "pathname") {
+			} else if (arg->GetAlias() == "pathname") {
 				bind_data->pathname_idx = i;
-			} else if (arg->alias == "search") {
+			} else if (arg->GetAlias() == "search") {
 				bind_data->search_idx = i;
-			} else if (arg->alias == "search_params") {
+			} else if (arg->GetAlias() == "search_params") {
 				bind_data->search_params_idx = i;
-			} else if (arg->alias == "hash") {
+			} else if (arg->GetAlias() == "hash") {
 				bind_data->hash_idx = i;
-			} else if (arg->alias == "encode") {
+			} else if (arg->GetAlias() == "encode") {
 				bind_data->encode_idx = i;
 			} else {
 				throw BinderException(
 				    "Unknown parameter '%s' for url_build. Valid parameters: protocol, "
 				    "username, password, hostname, port, pathname, search, search_params, hash, encode",
-				    arg->alias);
+				    arg->GetAlias());
 			}
 		}
 	}
@@ -1392,7 +1392,7 @@ static unique_ptr<FunctionData> UrlModifyBind(ClientContext &context, ScalarFunc
 
 	for (idx_t i = 0; i < arguments.size(); i++) {
 		auto &arg = arguments[i];
-		if (arg->alias.empty()) {
+		if (arg->GetAlias().empty()) {
 			// Positional argument - should be the URL
 			if (!found_url) {
 				bind_data->url_idx = i;
@@ -1400,30 +1400,30 @@ static unique_ptr<FunctionData> UrlModifyBind(ClientContext &context, ScalarFunc
 			} else {
 				throw BinderException("url_modify takes exactly one positional argument (the URL to modify)");
 			}
-		} else if (arg->alias == "protocol") {
+		} else if (arg->GetAlias() == "protocol") {
 			bind_data->protocol_idx = i;
-		} else if (arg->alias == "username") {
+		} else if (arg->GetAlias() == "username") {
 			bind_data->username_idx = i;
-		} else if (arg->alias == "password") {
+		} else if (arg->GetAlias() == "password") {
 			bind_data->password_idx = i;
-		} else if (arg->alias == "hostname") {
+		} else if (arg->GetAlias() == "hostname") {
 			bind_data->hostname_idx = i;
-		} else if (arg->alias == "port") {
+		} else if (arg->GetAlias() == "port") {
 			bind_data->port_idx = i;
-		} else if (arg->alias == "pathname") {
+		} else if (arg->GetAlias() == "pathname") {
 			bind_data->pathname_idx = i;
-		} else if (arg->alias == "search") {
+		} else if (arg->GetAlias() == "search") {
 			bind_data->search_idx = i;
-		} else if (arg->alias == "search_params") {
+		} else if (arg->GetAlias() == "search_params") {
 			bind_data->search_params_idx = i;
-		} else if (arg->alias == "hash") {
+		} else if (arg->GetAlias() == "hash") {
 			bind_data->hash_idx = i;
-		} else if (arg->alias == "encode") {
+		} else if (arg->GetAlias() == "encode") {
 			bind_data->encode_idx = i;
 		} else {
 			throw BinderException("Unknown parameter '%s' for url_modify. Valid parameters: protocol, "
 			                      "username, password, hostname, port, pathname, search, search_params, hash, encode",
-			                      arg->alias);
+			                      arg->GetAlias());
 		}
 	}
 
