@@ -3,6 +3,7 @@
 #include "duckdb.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/function/table_function.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 // v2.0 split vector.hpp: FlatVector / StructVector moved into their own headers.
@@ -39,23 +40,51 @@
 namespace duckdb {
 
 // --- bind-signature name type -------------------------------------------------
-#ifdef DUCKDB_HAS_IDENTIFIER
-using CompatName = Identifier;
-inline string CompatNameStr(const Identifier &id) {
-	return id.GetIdentifierName();
-}
-inline Identifier CompatMakeName(string name) {
-	return Identifier(std::move(name));
-}
-#else
-using CompatName = string;
+// The element type of the bind out-parameter, DERIVED from DuckDB rather than
+// guessed from a header probe.
+//
+// `__has_include("duckdb/common/identifier.hpp")` is NOT a safe proxy for this
+// change, and using it is a time bomb. identifier.hpp was BACKPORTED to the v1.5
+// stable branch WITHOUT changing table_function_bind_t, so on the v1.5 branch tip
+// the header exists while the bind signature still wants vector<string>. Three
+// heads, verified:
+//
+//   v1.5-variegata @ b155d6f63c (our pin)  no identifier.hpp   bind: vector<string>
+//   v1.5-variegata @ branch tip            HAS identifier.hpp  bind: vector<string>
+//   main (v2.0)                            HAS identifier.hpp  bind: vector<Identifier>
+//
+// A header-keyed probe is right today only because our pin predates the backport;
+// the next submodule bump would silently flip CompatName to Identifier on a DuckDB
+// that still wants strings. Reading the type off input_table_names is exact on all
+// three by construction, because it IS the bind out-parameter's element type
+// (table_function.hpp:110 on the pin, :123 on main).
+//
+// urlpattern registers no table functions and no COPY function, so nothing here
+// uses CompatName yet; it is kept so this header stays a drop-in match for the
+// rest of the fleet's copies -- which is exactly why it must not carry a probe
+// that is wrong on a version we have not bumped to yet.
+using CompatName = typename std::remove_reference<decltype(
+    std::declval<TableFunctionBindInput &>().input_table_names)>::type::value_type;
+
 inline string CompatNameStr(const string &name) {
 	return name;
 }
-inline string CompatMakeName(string name) {
-	return name;
+#ifdef DUCKDB_HAS_IDENTIFIER
+// Gated on the header only to declare the overload, never to decide CompatName.
+inline string CompatNameStr(const Identifier &id) {
+	return id.GetIdentifierName();
 }
 #endif
+inline CompatName CompatMakeName(string name) {
+	return CompatName(std::move(name));
+}
+
+// Standing guard: if CompatName ever resolves to a type the overloads above do not
+// cover -- e.g. Identifier on a build where identifier.hpp was not found, so the
+// Identifier overload was never declared -- this fails at compile time instead of
+// silently selecting the wrong conversion.
+static_assert(std::is_same<decltype(CompatNameStr(std::declval<const CompatName &>())), string>::value,
+              "CompatNameStr must accept the derived CompatName on every DuckDB line");
 
 // --- LogicalType alias ---------------------------------------------------------
 // v1.5: void SetAlias(string)                -- mutates in place
