@@ -1759,6 +1759,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register urlpattern() constructor function
 	auto urlpattern_constructor_func =
 	    ScalarFunction("urlpattern", {LogicalType::VARCHAR}, urlpattern_type, UrlpatternConstructorFunction);
+	// Every urlpattern_* function can throw InvalidInputException from its execute
+	// callback (the pattern cache throws on a malformed pattern). v2.0 REQUIRES that
+	// to be declared: throwing from a function that has not called SetFallible() is
+	// turned into "INTERNAL Error: ... the function is not marked as fallible". The
+	// check is an assertion, so it only fires on assertion-enabled builds -- a local
+	// release build will never show it. SetFallible() exists unchanged on v1.5, so
+	// this needs no shim. The url_* functions have no execute-path throw and are
+	// deliberately left alone.
+	urlpattern_constructor_func.SetFallible();
 	loader.RegisterFunction(urlpattern_constructor_func);
 
 	// Register urlpattern_init() function for component-based patterns (supports path-only patterns)
@@ -1775,12 +1784,14 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// This function reads its named parameters back off the argument aliases, which
 	// v2.0 stopped capturing by default.
 	CompatCaptureArgumentAliases(urlpattern_init_func);
+	urlpattern_init_func.SetFallible();
 	loader.RegisterFunction(urlpattern_init_func);
 
 	// Register urlpattern_test function (accepts URLPATTERN)
 	auto urlpattern_test_func = ScalarFunction("urlpattern_test", {urlpattern_type, LogicalType::VARCHAR},
 	                                           LogicalType::BOOLEAN, UrlpatternTestFunction);
 	urlpattern_test_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_test_func.SetFallible();
 	loader.RegisterFunction(urlpattern_test_func);
 
 	// Register urlpattern_extract function (accepts URLPATTERN)
@@ -1788,43 +1799,51 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction("urlpattern_extract", {urlpattern_type, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                   LogicalType::VARCHAR, UrlpatternExtractFunction);
 	urlpattern_extract_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_extract_func.SetFallible();
 	loader.RegisterFunction(urlpattern_extract_func);
 
 	// Register accessor functions (accept URLPATTERN)
 	auto urlpattern_pathname_func =
 	    ScalarFunction("urlpattern_pathname", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternPathnameFunction);
 	urlpattern_pathname_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_pathname_func.SetFallible();
 	loader.RegisterFunction(urlpattern_pathname_func);
 
 	auto urlpattern_protocol_func =
 	    ScalarFunction("urlpattern_protocol", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternProtocolFunction);
 	urlpattern_protocol_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_protocol_func.SetFallible();
 	loader.RegisterFunction(urlpattern_protocol_func);
 
 	auto urlpattern_hostname_func =
 	    ScalarFunction("urlpattern_hostname", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternHostnameFunction);
 	urlpattern_hostname_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_hostname_func.SetFallible();
 	loader.RegisterFunction(urlpattern_hostname_func);
 
 	auto urlpattern_port_func =
 	    ScalarFunction("urlpattern_port", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternPortFunction);
 	urlpattern_port_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_port_func.SetFallible();
 	loader.RegisterFunction(urlpattern_port_func);
 
 	auto urlpattern_search_func =
 	    ScalarFunction("urlpattern_search", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternSearchFunction);
 	urlpattern_search_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_search_func.SetFallible();
 	loader.RegisterFunction(urlpattern_search_func);
 
 	auto urlpattern_hash_func =
 	    ScalarFunction("urlpattern_hash", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternHashFunction);
 	urlpattern_hash_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_hash_func.SetFallible();
 	loader.RegisterFunction(urlpattern_hash_func);
 
 	// Register urlpattern_exec function (accepts URLPATTERN)
 	auto urlpattern_exec_func = ScalarFunction("urlpattern_exec", {urlpattern_type, LogicalType::VARCHAR},
 	                                           GetUrlpatternExecReturnType(), UrlpatternExecFunction);
 	urlpattern_exec_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_exec_func.SetFallible();
 	loader.RegisterFunction(urlpattern_exec_func);
 
 	//--------------------------------------------------------------------------
