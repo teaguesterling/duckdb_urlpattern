@@ -263,7 +263,12 @@ static constexpr const char *URLPATTERN_TYPE_NAME = "URLPATTERN";
 static LogicalType UrlpatternType() {
 	// v2.0 removed LogicalType::SetAlias in favour of WithAlias, which returns a
 	// copy rather than mutating a type whose type-info may be shared.
-	return CompatWithAlias(LogicalType(LogicalTypeId::VARCHAR), URLPATTERN_TYPE_NAME);
+	//
+	// Written with the bare `LogicalType::VARCHAR` deliberately: that spelling is a
+	// static constexpr LogicalTypeId, not a LogicalType, so it only compiles while
+	// CompatWithAlias's entry point stays concrete (a templated entry point deduces
+	// LogicalTypeId and hard-errors). This call is the shim's regression guard.
+	return CompatWithAlias(LogicalType::VARCHAR, URLPATTERN_TYPE_NAME);
 }
 
 // Check if a type is URLPATTERN

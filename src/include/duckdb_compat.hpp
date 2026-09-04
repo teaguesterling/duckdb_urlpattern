@@ -68,14 +68,35 @@ struct CompatHasWithAlias : std::false_type {};
 template <class T>
 struct CompatHasWithAlias<T, decltype(void(std::declval<const T &>().WithAlias(string())))> : std::true_type {};
 
-template <class TYPE = LogicalType>
-inline LogicalType CompatWithAlias(TYPE type, string alias) {
-	if constexpr (CompatHasWithAlias<TYPE>::value) {
-		return type.WithAlias(std::move(alias));
-	} else {
-		type.SetAlias(std::move(alias));
-		return type;
-	}
+// Tag-dispatched rather than `if constexpr`, because the ENTRY POINT below is
+// deliberately NOT a template and `if constexpr` only discards the untaken branch
+// inside one. Tag dispatch has the property that actually matters here: only the
+// selected overload is instantiated, so the branch naming the absent member is
+// never compiled.
+template <class TYPE>
+inline LogicalType CompatWithAliasImpl(TYPE type, string alias, std::true_type) {
+	return type.WithAlias(std::move(alias));
+}
+template <class TYPE>
+inline LogicalType CompatWithAliasImpl(TYPE type, string alias, std::false_type) {
+	type.SetAlias(std::move(alias));
+	return type;
+}
+
+// The entry point takes a concrete LogicalType. A `template <class TYPE =
+// LogicalType>` form looks equivalent but is not: the default template argument
+// is inert because deduction wins, so the very natural call
+//
+//     CompatWithAlias(LogicalType::VARCHAR, "urlpattern")
+//
+// deduces TYPE = LogicalTypeId -- `LogicalType::VARCHAR` is a static constexpr
+// LogicalTypeId (types.hpp), NOT a LogicalType -- and then hard-errors inside the
+// shim with "request for member 'SetAlias' in 'type', which is of non-class type
+// 'duckdb::LogicalTypeId'". That fires on the PINNED v1.5 build, not on v2.0. A
+// concrete parameter restores the implicit LogicalTypeId -> LogicalType
+// conversion at the call site; only the Impl overloads stay templated.
+inline LogicalType CompatWithAlias(LogicalType type, string alias) {
+	return CompatWithAliasImpl(std::move(type), std::move(alias), CompatHasWithAlias<LogicalType>());
 }
 
 // --- Vector::ToUnifiedFormat ---------------------------------------------------
