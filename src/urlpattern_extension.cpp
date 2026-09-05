@@ -1,6 +1,7 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "urlpattern_extension.hpp"
+#include "duckdb_compat.hpp"
 #include "duckdb_re2_regex_provider.hpp"
 
 #include "duckdb.hpp"
@@ -260,9 +261,14 @@ static constexpr const char *URLPATTERN_TYPE_NAME = "URLPATTERN";
 
 // Create the URLPATTERN logical type (VARCHAR-backed with alias)
 static LogicalType UrlpatternType() {
-	auto type = LogicalType(LogicalTypeId::VARCHAR);
-	type.SetAlias(URLPATTERN_TYPE_NAME);
-	return type;
+	// v2.0 removed LogicalType::SetAlias in favour of WithAlias, which returns a
+	// copy rather than mutating a type whose type-info may be shared.
+	//
+	// Written with the bare `LogicalType::VARCHAR` deliberately: that spelling is a
+	// static constexpr LogicalTypeId, not a LogicalType, so it only compiles while
+	// CompatWithAlias's entry point stays concrete (a templated entry point deduces
+	// LogicalTypeId and hard-errors). This call is the shim's regression guard.
+	return CompatWithAlias(LogicalType::VARCHAR, URLPATTERN_TYPE_NAME);
 }
 
 // Check if a type is URLPATTERN
@@ -373,8 +379,11 @@ struct UrlpatternInitBindData : public FunctionData {
 	}
 };
 
-static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, ScalarFunction &bound_function,
-                                                   vector<unique_ptr<Expression>> &arguments) {
+// Bind body in a version-neutral shape: DuckDB v2.0 replaced the three-argument
+// scalar bind callback with a single BindScalarFunctionInput &, so the callback
+// itself cannot have one signature on both lines. CompatScalarBind adapts this
+// body to whichever shape bind_scalar_function_t names (see duckdb_compat.hpp).
+static unique_ptr<FunctionData> UrlpatternInitBindBody(vector<unique_ptr<Expression>> &arguments) {
 	auto bind_data = make_uniq<UrlpatternInitBindData>();
 
 	for (idx_t i = 0; i < arguments.size(); i++) {
@@ -417,7 +426,7 @@ static unique_ptr<FunctionData> UrlpatternInitBind(ClientContext &context, Scala
 // URLPATTERN Creates a URLPattern from individual components (supports path-only patterns)
 //------------------------------------------------------------------------------
 static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<UrlpatternInitBindData>();
+	auto &bind_data = CompatBindInfo(state.expr.Cast<BoundFunctionExpression>()).Cast<UrlpatternInitBindData>();
 	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
 	// Helper to get optional string from argument
@@ -496,7 +505,7 @@ static void UrlpatternInitFunction(DataChunk &args, ExpressionState &state, Vect
 
 		// Return the cache key as the pattern identifier
 		// This allows the pattern to be reused with other functions
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, cache_key);
+		CompatFlatDataMutable<string_t>(result)[i] = StringVector::AddString(result, cache_key);
 	}
 }
 
@@ -539,71 +548,121 @@ static void UrlpatternExtractFunction(DataChunk &args, ExpressionState &state, V
 	// Get the local state with pattern cache
 	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
-	// ExecuteWithNulls lets us return SQL NULL (via the validity mask) rather than an
-	// empty string, so callers can distinguish three outcomes:
-	//   - no match / group absent -> NULL
-	//   - group matched an empty value -> '' (empty string)
-	TernaryExecutor::ExecuteWithNulls<string_t, string_t, string_t, string_t>(
-	    pattern_vector, url_vector, group_vector, result, args.size(),
-	    [&](string_t pattern_str, string_t url_str, string_t group_str, ValidityMask &mask, idx_t idx) -> string_t {
-		    // Get cached pattern (or parse and cache if not found)
-		    auto pattern = local_state.GetPattern(pattern_str);
+	// urlpattern_extract turns three NON-NULL inputs into SQL NULL in two cases --
+	// the URL did not match, and the named group is absent from every component --
+	// while a group that matched an EMPTY value must still come back as '' rather
+	// than NULL. Producing a NULL from non-NULL inputs is exactly what
+	// TernaryExecutor::ExecuteWithNulls existed for. DuckDB v2.0 removed it, and its
+	// replacement takes a differently shaped lambda (returning optional<RESULT_TYPE>),
+	// so no single call spelling compiles on both lines.
+	//
+	// What follows is a transcription of v1.5's ExecuteWithNulls, not a redesign. It
+	// keeps each property that version had:
+	//   * all three inputs constant -> constant result; if any of them is NULL the
+	//     result is NULL and the body never runs
+	//   * otherwise -> flat result; the body runs only on rows where all three inputs
+	//     are valid, and every row with a NULL input is NULL
+	//   * the body may still mark its own row NULL when all three inputs were valid
+	const bool all_constant = pattern_vector.GetVectorType() == VectorType::CONSTANT_VECTOR &&
+	                          url_vector.GetVectorType() == VectorType::CONSTANT_VECTOR &&
+	                          group_vector.GetVectorType() == VectorType::CONSTANT_VECTOR;
 
-		    // Execute the pattern against the URL
-		    std::string url(url_str.GetData(), url_str.GetSize());
-		    auto exec_result = pattern->exec(url, nullptr);
+	UnifiedVectorFormat pattern_data, url_data, group_data;
+	CompatToUnifiedFormat(pattern_vector, args.size(), pattern_data);
+	CompatToUnifiedFormat(url_vector, args.size(), url_data);
+	CompatToUnifiedFormat(group_vector, args.size(), group_data);
 
-		    // exec returns tl::expected<std::optional<url_pattern_result>, errors>
-		    if (!exec_result.has_value()) {
-			    throw InvalidInputException("URL pattern exec failed");
-		    }
+	const auto patterns = UnifiedVectorFormat::GetData<string_t>(pattern_data);
+	const auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
+	const auto groups = UnifiedVectorFormat::GetData<string_t>(group_data);
 
-		    const auto &match_opt = exec_result.value();
-		    if (!match_opt.has_value()) {
-			    // No match -> NULL
-			    mask.SetInvalid(idx);
-			    return string_t();
-		    }
+	// Written flat and collapsed to a constant vector at the end when every input was
+	// constant. A constant vector's element 0 and its validity mask are the same
+	// storage the flat accessors address, so this produces exactly what the constant
+	// fast path produced.
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_data = CompatFlatDataMutable<string_t>(result);
+	const idx_t row_count = all_constant ? 1 : args.size();
 
-		    const auto &match = match_opt.value();
+	for (idx_t i = 0; i < row_count; i++) {
+		const auto pattern_idx = pattern_data.sel->get_index(i);
+		const auto url_idx = url_data.sel->get_index(i);
+		const auto group_idx = group_data.sel->get_index(i);
 
-		    // Get the group name
-		    std::string group_name(group_str.GetData(), group_str.GetSize());
+		if (!pattern_data.validity.RowIsValid(pattern_idx) || !url_data.validity.RowIsValid(url_idx) ||
+		    !group_data.validity.RowIsValid(group_idx)) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
 
-		    // Helper to check a component for the group. A present-but-empty group
-		    // yields optional{""} (distinct from an absent group -> nullopt).
-		    auto check_component = [&](const auto &component) -> std::optional<std::string> {
-			    auto iter = component.groups.find(group_name);
-			    if (iter != component.groups.end() && iter->second.has_value()) {
-				    return iter->second.value();
-			    }
-			    return std::nullopt;
-		    };
+		auto pattern_str = patterns[pattern_idx];
+		auto url_str = urls[url_idx];
+		auto group_str = groups[group_idx];
 
-		    // Look for the group in pathname (most common use case)
-		    if (auto val = check_component(match.pathname)) {
-			    return StringVector::AddString(result, *val);
-		    }
-		    if (auto val = check_component(match.protocol)) {
-			    return StringVector::AddString(result, *val);
-		    }
-		    if (auto val = check_component(match.hostname)) {
-			    return StringVector::AddString(result, *val);
-		    }
-		    if (auto val = check_component(match.port)) {
-			    return StringVector::AddString(result, *val);
-		    }
-		    if (auto val = check_component(match.search)) {
-			    return StringVector::AddString(result, *val);
-		    }
-		    if (auto val = check_component(match.hash)) {
-			    return StringVector::AddString(result, *val);
-		    }
+		// Get cached pattern (or parse and cache if not found)
+		auto pattern = local_state.GetPattern(pattern_str);
 
-		    // Matched, but the group is absent from every component -> NULL
-		    mask.SetInvalid(idx);
-		    return string_t();
-	    });
+		// Execute the pattern against the URL
+		std::string url(url_str.GetData(), url_str.GetSize());
+		auto exec_result = pattern->exec(url, nullptr);
+
+		// exec returns tl::expected<std::optional<url_pattern_result>, errors>
+		if (!exec_result.has_value()) {
+			throw InvalidInputException("URL pattern exec failed");
+		}
+
+		const auto &match_opt = exec_result.value();
+		if (!match_opt.has_value()) {
+			// No match -> NULL
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+
+		const auto &match = match_opt.value();
+
+		// Get the group name
+		std::string group_name(group_str.GetData(), group_str.GetSize());
+
+		// Helper to check a component for the group. A present-but-empty group
+		// yields optional{""} (distinct from an absent group -> nullopt).
+		auto check_component = [&](const auto &component) -> std::optional<std::string> {
+			auto iter = component.groups.find(group_name);
+			if (iter != component.groups.end() && iter->second.has_value()) {
+				return iter->second.value();
+			}
+			return std::nullopt;
+		};
+
+		// Look for the group in pathname (most common use case), then the others, in
+		// the same order the previous implementation checked them.
+		std::optional<std::string> val = check_component(match.pathname);
+		if (!val) {
+			val = check_component(match.protocol);
+		}
+		if (!val) {
+			val = check_component(match.hostname);
+		}
+		if (!val) {
+			val = check_component(match.port);
+		}
+		if (!val) {
+			val = check_component(match.search);
+		}
+		if (!val) {
+			val = check_component(match.hash);
+		}
+
+		if (!val) {
+			// Matched, but the group is absent from every component -> NULL
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+		result_data[i] = StringVector::AddString(result, *val);
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -724,18 +783,18 @@ static void UrlpatternExecFunction(DataChunk &args, ExpressionState &state, Vect
 	auto &local_state = ExecuteFunctionState::GetFunctionState(state)->Cast<URLPatternLocalState>();
 
 	auto &child_entries = StructVector::GetEntries(result);
-	auto &matched_vec = *child_entries[0];  // BOOLEAN
-	auto &protocol_vec = *child_entries[1]; // VARCHAR
-	auto &hostname_vec = *child_entries[2]; // VARCHAR
-	auto &port_vec = *child_entries[3];     // VARCHAR
-	auto &pathname_vec = *child_entries[4]; // VARCHAR
-	auto &search_vec = *child_entries[5];   // VARCHAR
-	auto &hash_vec = *child_entries[6];     // VARCHAR
-	auto &groups_vec = *child_entries[7];   // MAP(VARCHAR, VARCHAR)
+	auto &matched_vec = CompatVectorRef(child_entries[0]);  // BOOLEAN
+	auto &protocol_vec = CompatVectorRef(child_entries[1]); // VARCHAR
+	auto &hostname_vec = CompatVectorRef(child_entries[2]); // VARCHAR
+	auto &port_vec = CompatVectorRef(child_entries[3]);     // VARCHAR
+	auto &pathname_vec = CompatVectorRef(child_entries[4]); // VARCHAR
+	auto &search_vec = CompatVectorRef(child_entries[5]);   // VARCHAR
+	auto &hash_vec = CompatVectorRef(child_entries[6]);     // VARCHAR
+	auto &groups_vec = CompatVectorRef(child_entries[7]);   // MAP(VARCHAR, VARCHAR)
 
 	UnifiedVectorFormat pattern_data, url_data;
-	pattern_vector.ToUnifiedFormat(args.size(), pattern_data);
-	url_vector.ToUnifiedFormat(args.size(), url_data);
+	CompatToUnifiedFormat(pattern_vector, args.size(), pattern_data);
+	CompatToUnifiedFormat(url_vector, args.size(), url_data);
 
 	auto patterns = UnifiedVectorFormat::GetData<string_t>(pattern_data);
 	auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
@@ -768,13 +827,13 @@ static void UrlpatternExecFunction(DataChunk &args, ExpressionState &state, Vect
 
 		if (!match_opt.has_value()) {
 			// No match - set matched to false and other fields to empty
-			FlatVector::GetData<bool>(matched_vec)[i] = false;
-			FlatVector::GetData<string_t>(protocol_vec)[i] = StringVector::AddString(protocol_vec, "");
-			FlatVector::GetData<string_t>(hostname_vec)[i] = StringVector::AddString(hostname_vec, "");
-			FlatVector::GetData<string_t>(port_vec)[i] = StringVector::AddString(port_vec, "");
-			FlatVector::GetData<string_t>(pathname_vec)[i] = StringVector::AddString(pathname_vec, "");
-			FlatVector::GetData<string_t>(search_vec)[i] = StringVector::AddString(search_vec, "");
-			FlatVector::GetData<string_t>(hash_vec)[i] = StringVector::AddString(hash_vec, "");
+			CompatFlatDataMutable<bool>(matched_vec)[i] = false;
+			CompatFlatDataMutable<string_t>(protocol_vec)[i] = StringVector::AddString(protocol_vec, "");
+			CompatFlatDataMutable<string_t>(hostname_vec)[i] = StringVector::AddString(hostname_vec, "");
+			CompatFlatDataMutable<string_t>(port_vec)[i] = StringVector::AddString(port_vec, "");
+			CompatFlatDataMutable<string_t>(pathname_vec)[i] = StringVector::AddString(pathname_vec, "");
+			CompatFlatDataMutable<string_t>(search_vec)[i] = StringVector::AddString(search_vec, "");
+			CompatFlatDataMutable<string_t>(hash_vec)[i] = StringVector::AddString(hash_vec, "");
 			// Empty map
 			groups_vec.SetValue(i, Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, {}, {}));
 			continue;
@@ -783,15 +842,15 @@ static void UrlpatternExecFunction(DataChunk &args, ExpressionState &state, Vect
 		const auto &match = match_opt.value();
 
 		// Set matched to true
-		FlatVector::GetData<bool>(matched_vec)[i] = true;
+		CompatFlatDataMutable<bool>(matched_vec)[i] = true;
 
 		// Set component inputs
-		FlatVector::GetData<string_t>(protocol_vec)[i] = StringVector::AddString(protocol_vec, match.protocol.input);
-		FlatVector::GetData<string_t>(hostname_vec)[i] = StringVector::AddString(hostname_vec, match.hostname.input);
-		FlatVector::GetData<string_t>(port_vec)[i] = StringVector::AddString(port_vec, match.port.input);
-		FlatVector::GetData<string_t>(pathname_vec)[i] = StringVector::AddString(pathname_vec, match.pathname.input);
-		FlatVector::GetData<string_t>(search_vec)[i] = StringVector::AddString(search_vec, match.search.input);
-		FlatVector::GetData<string_t>(hash_vec)[i] = StringVector::AddString(hash_vec, match.hash.input);
+		CompatFlatDataMutable<string_t>(protocol_vec)[i] = StringVector::AddString(protocol_vec, match.protocol.input);
+		CompatFlatDataMutable<string_t>(hostname_vec)[i] = StringVector::AddString(hostname_vec, match.hostname.input);
+		CompatFlatDataMutable<string_t>(port_vec)[i] = StringVector::AddString(port_vec, match.port.input);
+		CompatFlatDataMutable<string_t>(pathname_vec)[i] = StringVector::AddString(pathname_vec, match.pathname.input);
+		CompatFlatDataMutable<string_t>(search_vec)[i] = StringVector::AddString(search_vec, match.search.input);
+		CompatFlatDataMutable<string_t>(hash_vec)[i] = StringVector::AddString(hash_vec, match.hash.input);
 
 		// Collect all groups from all components into a single map
 		vector<Value> keys;
@@ -1010,20 +1069,20 @@ static void UrlParseFunction(DataChunk &args, ExpressionState &state, Vector &re
 	auto &url_vector = args.data[0];
 
 	auto &child_entries = StructVector::GetEntries(result);
-	auto &href_vec = *child_entries[0];
-	auto &origin_vec = *child_entries[1];
-	auto &protocol_vec = *child_entries[2];
-	auto &username_vec = *child_entries[3];
-	auto &password_vec = *child_entries[4];
-	auto &host_vec = *child_entries[5];
-	auto &hostname_vec = *child_entries[6];
-	auto &port_vec = *child_entries[7];
-	auto &pathname_vec = *child_entries[8];
-	auto &search_vec = *child_entries[9];
-	auto &hash_vec = *child_entries[10];
+	auto &href_vec = CompatVectorRef(child_entries[0]);
+	auto &origin_vec = CompatVectorRef(child_entries[1]);
+	auto &protocol_vec = CompatVectorRef(child_entries[2]);
+	auto &username_vec = CompatVectorRef(child_entries[3]);
+	auto &password_vec = CompatVectorRef(child_entries[4]);
+	auto &host_vec = CompatVectorRef(child_entries[5]);
+	auto &hostname_vec = CompatVectorRef(child_entries[6]);
+	auto &port_vec = CompatVectorRef(child_entries[7]);
+	auto &pathname_vec = CompatVectorRef(child_entries[8]);
+	auto &search_vec = CompatVectorRef(child_entries[9]);
+	auto &hash_vec = CompatVectorRef(child_entries[10]);
 
 	UnifiedVectorFormat url_data;
-	url_vector.ToUnifiedFormat(args.size(), url_data);
+	CompatToUnifiedFormat(url_vector, args.size(), url_data);
 	auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
 
 	for (idx_t i = 0; i < args.size(); i++) {
@@ -1056,23 +1115,23 @@ static void UrlParseFunction(DataChunk &args, ExpressionState &state, Vector &re
 		auto search = url.get_search();
 		auto hash = url.get_hash();
 
-		FlatVector::GetData<string_t>(href_vec)[i] = StringVector::AddString(href_vec, href.data(), href.size());
-		FlatVector::GetData<string_t>(origin_vec)[i] = StringVector::AddString(origin_vec, origin);
-		FlatVector::GetData<string_t>(protocol_vec)[i] =
+		CompatFlatDataMutable<string_t>(href_vec)[i] = StringVector::AddString(href_vec, href.data(), href.size());
+		CompatFlatDataMutable<string_t>(origin_vec)[i] = StringVector::AddString(origin_vec, origin);
+		CompatFlatDataMutable<string_t>(protocol_vec)[i] =
 		    StringVector::AddString(protocol_vec, protocol.data(), protocol.size());
-		FlatVector::GetData<string_t>(username_vec)[i] =
+		CompatFlatDataMutable<string_t>(username_vec)[i] =
 		    StringVector::AddString(username_vec, username.data(), username.size());
-		FlatVector::GetData<string_t>(password_vec)[i] =
+		CompatFlatDataMutable<string_t>(password_vec)[i] =
 		    StringVector::AddString(password_vec, password.data(), password.size());
-		FlatVector::GetData<string_t>(host_vec)[i] = StringVector::AddString(host_vec, host.data(), host.size());
-		FlatVector::GetData<string_t>(hostname_vec)[i] =
+		CompatFlatDataMutable<string_t>(host_vec)[i] = StringVector::AddString(host_vec, host.data(), host.size());
+		CompatFlatDataMutable<string_t>(hostname_vec)[i] =
 		    StringVector::AddString(hostname_vec, hostname.data(), hostname.size());
-		FlatVector::GetData<string_t>(port_vec)[i] = StringVector::AddString(port_vec, port.data(), port.size());
-		FlatVector::GetData<string_t>(pathname_vec)[i] =
+		CompatFlatDataMutable<string_t>(port_vec)[i] = StringVector::AddString(port_vec, port.data(), port.size());
+		CompatFlatDataMutable<string_t>(pathname_vec)[i] =
 		    StringVector::AddString(pathname_vec, pathname.data(), pathname.size());
-		FlatVector::GetData<string_t>(search_vec)[i] =
+		CompatFlatDataMutable<string_t>(search_vec)[i] =
 		    StringVector::AddString(search_vec, search.data(), search.size());
-		FlatVector::GetData<string_t>(hash_vec)[i] = StringVector::AddString(hash_vec, hash.data(), hash.size());
+		CompatFlatDataMutable<string_t>(hash_vec)[i] = StringVector::AddString(hash_vec, hash.data(), hash.size());
 	}
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
@@ -1133,7 +1192,7 @@ static vector<pair<string, string>> ParseQueryString(std::string_view query) {
 static void UrlSearchParamsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &url_vector = args.data[0];
 	UnifiedVectorFormat url_data;
-	url_vector.ToUnifiedFormat(args.size(), url_data);
+	CompatToUnifiedFormat(url_vector, args.size(), url_data);
 	auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
 
 	for (idx_t i = 0; i < args.size(); i++) {
@@ -1170,8 +1229,8 @@ static void UrlSearchParamFunction(DataChunk &args, ExpressionState &state, Vect
 	auto &name_vector = args.data[1];
 
 	UnifiedVectorFormat url_data, name_data;
-	url_vector.ToUnifiedFormat(args.size(), url_data);
-	name_vector.ToUnifiedFormat(args.size(), name_data);
+	CompatToUnifiedFormat(url_vector, args.size(), url_data);
+	CompatToUnifiedFormat(name_vector, args.size(), name_data);
 
 	auto urls = UnifiedVectorFormat::GetData<string_t>(url_data);
 	auto names = UnifiedVectorFormat::GetData<string_t>(name_data);
@@ -1201,7 +1260,7 @@ static void UrlSearchParamFunction(DataChunk &args, ExpressionState &state, Vect
 		bool found = false;
 		for (const auto &[key, val] : params) {
 			if (key == name) {
-				FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, val);
+				CompatFlatDataMutable<string_t>(result)[i] = StringVector::AddString(result, val);
 				found = true;
 				break;
 			}
@@ -1336,8 +1395,11 @@ static std::string BuildQueryString(const Value &map_value, bool encode) {
 	return query;
 }
 
-static unique_ptr<FunctionData> UrlBuildBind(ClientContext &context, ScalarFunction &bound_function,
-                                             vector<unique_ptr<Expression>> &arguments) {
+// Bind body in a version-neutral shape: DuckDB v2.0 replaced the three-argument
+// scalar bind callback with a single BindScalarFunctionInput &, so the callback
+// itself cannot have one signature on both lines. CompatScalarBind adapts this
+// body to whichever shape bind_scalar_function_t names (see duckdb_compat.hpp).
+static unique_ptr<FunctionData> UrlBuildBindBody(vector<unique_ptr<Expression>> &arguments) {
 	auto bind_data = make_uniq<UrlBuildBindData>();
 	bind_data->is_modify = false;
 
@@ -1382,8 +1444,11 @@ static unique_ptr<FunctionData> UrlBuildBind(ClientContext &context, ScalarFunct
 	return bind_data;
 }
 
-static unique_ptr<FunctionData> UrlModifyBind(ClientContext &context, ScalarFunction &bound_function,
-                                              vector<unique_ptr<Expression>> &arguments) {
+// Bind body in a version-neutral shape: DuckDB v2.0 replaced the three-argument
+// scalar bind callback with a single BindScalarFunctionInput &, so the callback
+// itself cannot have one signature on both lines. CompatScalarBind adapts this
+// body to whichever shape bind_scalar_function_t names (see duckdb_compat.hpp).
+static unique_ptr<FunctionData> UrlModifyBindBody(vector<unique_ptr<Expression>> &arguments) {
 	auto bind_data = make_uniq<UrlBuildBindData>();
 	bind_data->is_modify = true;
 
@@ -1442,7 +1507,7 @@ static unique_ptr<FunctionData> UrlModifyBind(ClientContext &context, ScalarFunc
 
 // Core URL building logic used by both url_build and url_modify
 static void UrlBuildCore(DataChunk &args, ExpressionState &state, Vector &result, bool is_modify) {
-	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<UrlBuildBindData>();
+	auto &bind_data = CompatBindInfo(state.expr.Cast<BoundFunctionExpression>()).Cast<UrlBuildBindData>();
 
 	// Helper to get optional string from argument
 	auto get_optional_string = [&](idx_t param_idx, idx_t row_idx) -> std::optional<std::string> {
@@ -1634,7 +1699,7 @@ static void UrlBuildCore(DataChunk &args, ExpressionState &state, Vector &result
 			}
 		}
 
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddString(result, url_str);
+		CompatFlatDataMutable<string_t>(result)[i] = StringVector::AddString(result, url_str);
 	}
 }
 
@@ -1694,65 +1759,91 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register urlpattern() constructor function
 	auto urlpattern_constructor_func =
 	    ScalarFunction("urlpattern", {LogicalType::VARCHAR}, urlpattern_type, UrlpatternConstructorFunction);
+	// Every urlpattern_* function can throw InvalidInputException from its execute
+	// callback (the pattern cache throws on a malformed pattern). v2.0 REQUIRES that
+	// to be declared: throwing from a function that has not called SetFallible() is
+	// turned into "INTERNAL Error: ... the function is not marked as fallible". The
+	// check is an assertion, so it only fires on assertion-enabled builds -- a local
+	// release build will never show it. SetFallible() exists unchanged on v1.5, so
+	// this needs no shim. The url_* functions have no execute-path throw and are
+	// deliberately left alone.
+	urlpattern_constructor_func.SetFallible();
 	loader.RegisterFunction(urlpattern_constructor_func);
 
 	// Register urlpattern_init() function for component-based patterns (supports path-only patterns)
 	// Usage: urlpattern_init(pathname := '/users/:id')
 	//        urlpattern_init(protocol := 'https', hostname := '*.example.com', pathname := '/api/*')
-	auto urlpattern_init_func = ScalarFunction("urlpattern_init", {}, urlpattern_type, UrlpatternInitFunction,
-	                                           UrlpatternInitBind, nullptr, nullptr, InitURLPatternLocalState);
-	urlpattern_init_func.varargs = LogicalType::ANY; // Accept VARCHAR and BOOLEAN parameters
-	urlpattern_init_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	// Built with the 4-argument constructor plus setters rather than the long
+	// positional form: v2.0 dropped `bind_extended` from the parameter list, so the
+	// positional arguments no longer name the same parameters on both lines.
+	auto urlpattern_init_func = ScalarFunction("urlpattern_init", {}, urlpattern_type, UrlpatternInitFunction);
+	urlpattern_init_func.SetBindCallback(CompatScalarBind<UrlpatternInitBindBody>);
+	urlpattern_init_func.SetInitStateCallback(InitURLPatternLocalState);
+	CompatSetVarArgs(urlpattern_init_func, LogicalType::ANY); // Accept VARCHAR and BOOLEAN parameters
+	urlpattern_init_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// This function reads its named parameters back off the argument aliases, which
+	// v2.0 stopped capturing by default.
+	CompatCaptureArgumentAliases(urlpattern_init_func);
+	urlpattern_init_func.SetFallible();
 	loader.RegisterFunction(urlpattern_init_func);
 
 	// Register urlpattern_test function (accepts URLPATTERN)
 	auto urlpattern_test_func = ScalarFunction("urlpattern_test", {urlpattern_type, LogicalType::VARCHAR},
 	                                           LogicalType::BOOLEAN, UrlpatternTestFunction);
-	urlpattern_test_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_test_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_test_func.SetFallible();
 	loader.RegisterFunction(urlpattern_test_func);
 
 	// Register urlpattern_extract function (accepts URLPATTERN)
 	auto urlpattern_extract_func =
 	    ScalarFunction("urlpattern_extract", {urlpattern_type, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                   LogicalType::VARCHAR, UrlpatternExtractFunction);
-	urlpattern_extract_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_extract_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_extract_func.SetFallible();
 	loader.RegisterFunction(urlpattern_extract_func);
 
 	// Register accessor functions (accept URLPATTERN)
 	auto urlpattern_pathname_func =
 	    ScalarFunction("urlpattern_pathname", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternPathnameFunction);
-	urlpattern_pathname_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_pathname_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_pathname_func.SetFallible();
 	loader.RegisterFunction(urlpattern_pathname_func);
 
 	auto urlpattern_protocol_func =
 	    ScalarFunction("urlpattern_protocol", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternProtocolFunction);
-	urlpattern_protocol_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_protocol_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_protocol_func.SetFallible();
 	loader.RegisterFunction(urlpattern_protocol_func);
 
 	auto urlpattern_hostname_func =
 	    ScalarFunction("urlpattern_hostname", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternHostnameFunction);
-	urlpattern_hostname_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_hostname_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_hostname_func.SetFallible();
 	loader.RegisterFunction(urlpattern_hostname_func);
 
 	auto urlpattern_port_func =
 	    ScalarFunction("urlpattern_port", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternPortFunction);
-	urlpattern_port_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_port_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_port_func.SetFallible();
 	loader.RegisterFunction(urlpattern_port_func);
 
 	auto urlpattern_search_func =
 	    ScalarFunction("urlpattern_search", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternSearchFunction);
-	urlpattern_search_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_search_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_search_func.SetFallible();
 	loader.RegisterFunction(urlpattern_search_func);
 
 	auto urlpattern_hash_func =
 	    ScalarFunction("urlpattern_hash", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternHashFunction);
-	urlpattern_hash_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_hash_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_hash_func.SetFallible();
 	loader.RegisterFunction(urlpattern_hash_func);
 
 	// Register urlpattern_exec function (accepts URLPATTERN)
 	auto urlpattern_exec_func = ScalarFunction("urlpattern_exec", {urlpattern_type, LogicalType::VARCHAR},
 	                                           GetUrlpatternExecReturnType(), UrlpatternExecFunction);
-	urlpattern_exec_func.init_local_state = InitURLPatternLocalState;
+	urlpattern_exec_func.SetInitStateCallback(InitURLPatternLocalState);
+	urlpattern_exec_func.SetFallible();
 	loader.RegisterFunction(urlpattern_exec_func);
 
 	//--------------------------------------------------------------------------
@@ -1811,15 +1902,23 @@ static void LoadInternal(ExtensionLoader &loader) {
 	//--------------------------------------------------------------------------
 
 	// url_build(protocol := ..., hostname := ..., ...) -> VARCHAR
-	auto url_build_func = ScalarFunction("url_build", {}, LogicalType::VARCHAR, UrlBuildFunction, UrlBuildBind);
-	url_build_func.varargs = LogicalType::ANY;
-	url_build_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	auto url_build_func = ScalarFunction("url_build", {}, LogicalType::VARCHAR, UrlBuildFunction);
+	url_build_func.SetBindCallback(CompatScalarBind<UrlBuildBindBody>);
+	CompatSetVarArgs(url_build_func, LogicalType::ANY);
+	url_build_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// Named parameters come from the argument aliases; v2.0 stopped capturing those
+	// by default.
+	CompatCaptureArgumentAliases(url_build_func);
 	loader.RegisterFunction(url_build_func);
 
 	// url_modify(url, protocol := ..., hostname := ..., ...) -> VARCHAR
-	auto url_modify_func = ScalarFunction("url_modify", {}, LogicalType::VARCHAR, UrlModifyFunction, UrlModifyBind);
-	url_modify_func.varargs = LogicalType::ANY;
-	url_modify_func.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	auto url_modify_func = ScalarFunction("url_modify", {}, LogicalType::VARCHAR, UrlModifyFunction);
+	url_modify_func.SetBindCallback(CompatScalarBind<UrlModifyBindBody>);
+	CompatSetVarArgs(url_modify_func, LogicalType::ANY);
+	url_modify_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// Named parameters come from the argument aliases; v2.0 stopped capturing those
+	// by default.
+	CompatCaptureArgumentAliases(url_modify_func);
 	loader.RegisterFunction(url_modify_func);
 }
 

@@ -8,7 +8,15 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
+  # github.event_name is part of the key on purpose. Without it a push to a
+  # branch and a workflow_dispatch on that same branch collide: same ref, same
+  # sha, both with empty head_ref/base_ref. cancel-in-progress then kills the
+  # push run every time the canary is dispatched by hand, and a cancelled run
+  # reads as a FAILED one on the checks dashboard -- which is exactly how this
+  # PR came to show five red checks with nothing actually broken (push run
+  # 33836472803 cancelled four seconds in by workflow_dispatch run 33836476774,
+  # same sha 057358a).
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: true
 
 jobs:
