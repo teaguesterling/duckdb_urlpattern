@@ -1759,40 +1759,55 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register urlpattern() constructor function
 	auto urlpattern_constructor_func =
 	    ScalarFunction("urlpattern", {LogicalType::VARCHAR}, urlpattern_type, UrlpatternConstructorFunction);
-	// Every urlpattern_* function can throw InvalidInputException from its execute
-	// callback (the pattern cache throws on a malformed pattern). v2.0 REQUIRES that
-	// to be declared: throwing from a function that has not called SetFallible() is
-	// turned into "INTERNAL Error: ... the function is not marked as fallible". The
-	// check is an assertion, so it only fires on assertion-enabled builds -- a local
-	// release build will never show it. SetFallible() exists unchanged on v1.5, so
-	// this needs no shim. The url_* functions have no execute-path throw and are
-	// deliberately left alone.
 	urlpattern_constructor_func.SetFallible();
-	loader.RegisterFunction(urlpattern_constructor_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_constructor_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern"};
+		desc.description = "Construct a URLPATTERN from a pattern string.";
+		desc.examples = {"urlpattern('/users/:id')"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// Register urlpattern_init() function for component-based patterns (supports path-only patterns)
-	// Usage: urlpattern_init(pathname := '/users/:id')
-	//        urlpattern_init(protocol := 'https', hostname := '*.example.com', pathname := '/api/*')
-	// Built with the 4-argument constructor plus setters rather than the long
-	// positional form: v2.0 dropped `bind_extended` from the parameter list, so the
-	// positional arguments no longer name the same parameters on both lines.
 	auto urlpattern_init_func = ScalarFunction("urlpattern_init", {}, urlpattern_type, UrlpatternInitFunction);
 	urlpattern_init_func.SetBindCallback(CompatScalarBind<UrlpatternInitBindBody>);
 	urlpattern_init_func.SetInitStateCallback(InitURLPatternLocalState);
 	CompatSetVarArgs(urlpattern_init_func, LogicalType::ANY); // Accept VARCHAR and BOOLEAN parameters
 	urlpattern_init_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	// This function reads its named parameters back off the argument aliases, which
-	// v2.0 stopped capturing by default.
 	CompatCaptureArgumentAliases(urlpattern_init_func);
 	urlpattern_init_func.SetFallible();
-	loader.RegisterFunction(urlpattern_init_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_init_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"options"};
+		desc.description = "Initialize a URLPATTERN with named component patterns.";
+		desc.examples = {"urlpattern_init(pathname := '/users/:id')"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// Register urlpattern_test function (accepts URLPATTERN)
 	auto urlpattern_test_func = ScalarFunction("urlpattern_test", {urlpattern_type, LogicalType::VARCHAR},
 	                                           LogicalType::BOOLEAN, UrlpatternTestFunction);
 	urlpattern_test_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_test_func.SetFallible();
-	loader.RegisterFunction(urlpattern_test_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_test_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern", "url"};
+		desc.description = "Test if a URL matches a URLPattern.";
+		desc.examples = {"urlpattern_test(urlpattern('/users/:id'), '/users/123')"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// Register urlpattern_extract function (accepts URLPATTERN)
 	auto urlpattern_extract_func =
@@ -1800,102 +1815,201 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                   LogicalType::VARCHAR, UrlpatternExtractFunction);
 	urlpattern_extract_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_extract_func.SetFallible();
-	loader.RegisterFunction(urlpattern_extract_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_extract_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern", "url", "component"};
+		desc.description = "Extract matched component value from a URL using URLPattern.";
+		desc.examples = {"urlpattern_extract(urlpattern('/users/:id'), '/users/123', 'id')"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// Register accessor functions (accept URLPATTERN)
 	auto urlpattern_pathname_func =
 	    ScalarFunction("urlpattern_pathname", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternPathnameFunction);
 	urlpattern_pathname_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_pathname_func.SetFallible();
-	loader.RegisterFunction(urlpattern_pathname_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_pathname_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern"};
+		desc.description = "Get the pathname pattern of a URLPattern.";
+		desc.examples = {"urlpattern_pathname(urlpattern('/users/:id'))"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	auto urlpattern_protocol_func =
 	    ScalarFunction("urlpattern_protocol", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternProtocolFunction);
 	urlpattern_protocol_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_protocol_func.SetFallible();
-	loader.RegisterFunction(urlpattern_protocol_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_protocol_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern"};
+		desc.description = "Get the protocol pattern of a URLPattern.";
+		desc.examples = {"urlpattern_protocol(urlpattern('https://example.com/*'))"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	auto urlpattern_hostname_func =
 	    ScalarFunction("urlpattern_hostname", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternHostnameFunction);
 	urlpattern_hostname_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_hostname_func.SetFallible();
-	loader.RegisterFunction(urlpattern_hostname_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_hostname_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern"};
+		desc.description = "Get the hostname pattern of a URLPattern.";
+		desc.examples = {"urlpattern_hostname(urlpattern('https://example.com/*'))"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	auto urlpattern_port_func =
 	    ScalarFunction("urlpattern_port", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternPortFunction);
 	urlpattern_port_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_port_func.SetFallible();
-	loader.RegisterFunction(urlpattern_port_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_port_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern"};
+		desc.description = "Get the port pattern of a URLPattern.";
+		desc.examples = {"urlpattern_port(urlpattern('https://example.com:8080/*'))"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	auto urlpattern_search_func =
 	    ScalarFunction("urlpattern_search", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternSearchFunction);
 	urlpattern_search_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_search_func.SetFallible();
-	loader.RegisterFunction(urlpattern_search_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_search_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern"};
+		desc.description = "Get the search/query pattern of a URLPattern.";
+		desc.examples = {"urlpattern_search(urlpattern('https://example.com/*?q=*'))"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	auto urlpattern_hash_func =
 	    ScalarFunction("urlpattern_hash", {urlpattern_type}, LogicalType::VARCHAR, UrlpatternHashFunction);
 	urlpattern_hash_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_hash_func.SetFallible();
-	loader.RegisterFunction(urlpattern_hash_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_hash_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern"};
+		desc.description = "Get the hash/fragment pattern of a URLPattern.";
+		desc.examples = {"urlpattern_hash(urlpattern('https://example.com/*#*'))"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// Register urlpattern_exec function (accepts URLPATTERN)
 	auto urlpattern_exec_func = ScalarFunction("urlpattern_exec", {urlpattern_type, LogicalType::VARCHAR},
 	                                           GetUrlpatternExecReturnType(), UrlpatternExecFunction);
 	urlpattern_exec_func.SetInitStateCallback(InitURLPatternLocalState);
 	urlpattern_exec_func.SetFallible();
-	loader.RegisterFunction(urlpattern_exec_func);
+	{
+		CreateScalarFunctionInfo info(std::move(urlpattern_exec_func));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {"pattern", "url"};
+		desc.description = "Execute pattern matching on a URL and return matched components and groups as a STRUCT.";
+		desc.examples = {"urlpattern_exec(urlpattern('/users/:id'), '/users/123')"};
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	//--------------------------------------------------------------------------
 	// URL Parsing Functions
 	//--------------------------------------------------------------------------
 
+	auto reg_scalar = [&](ScalarFunction fn, vector<string> params, string description, vector<string> examples) {
+		CreateScalarFunctionInfo info(std::move(fn));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = std::move(params);
+		desc.description = std::move(description);
+		desc.examples = std::move(examples);
+		desc.categories = {"url"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	};
+
 	// url_parse(url) -> STRUCT
-	loader.RegisterFunction(
-	    ScalarFunction("url_parse", {LogicalType::VARCHAR}, GetUrlParseReturnType(), UrlParseFunction));
+	reg_scalar(ScalarFunction("url_parse", {LogicalType::VARCHAR}, GetUrlParseReturnType(), UrlParseFunction), {"url"},
+	           "Parse a URL string into a STRUCT of its components.",
+	           {"url_parse('https://user:pass@example.com:8080/path?q=1#hash')"});
 
 	// Individual component functions
-	loader.RegisterFunction(
-	    ScalarFunction("url_protocol", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlProtocolFunction));
-	loader.RegisterFunction(ScalarFunction("url_host", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_hostname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostnameFunction));
-	loader.RegisterFunction(ScalarFunction("url_port", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPortFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_pathname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPathnameFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_search", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlSearchFunction));
-	loader.RegisterFunction(ScalarFunction("url_hash", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHashFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_username", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlUsernameFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_password", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPasswordFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_origin", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlOriginFunction));
-	loader.RegisterFunction(ScalarFunction("url_href", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHrefFunction));
-	loader.RegisterFunction(
-	    ScalarFunction("url_valid", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, UrlValidFunction));
+	reg_scalar(ScalarFunction("url_protocol", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlProtocolFunction),
+	           {"url"}, "Get the protocol component of a URL.", {"url_protocol('https://example.com')"});
+	reg_scalar(ScalarFunction("url_host", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostFunction), {"url"},
+	           "Get the host (hostname and port) component of a URL.", {"url_host('https://example.com:8080')"});
+	reg_scalar(ScalarFunction("url_hostname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHostnameFunction),
+	           {"url"}, "Get the hostname component of a URL.", {"url_hostname('https://example.com:8080')"});
+	reg_scalar(ScalarFunction("url_port", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPortFunction), {"url"},
+	           "Get the port component of a URL.", {"url_port('https://example.com:8080')"});
+	reg_scalar(ScalarFunction("url_pathname", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPathnameFunction),
+	           {"url"}, "Get the pathname component of a URL.", {"url_pathname('https://example.com/api/v1')"});
+	reg_scalar(ScalarFunction("url_search", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlSearchFunction), {"url"},
+	           "Get the query string component of a URL.", {"url_search('https://example.com?q=1')"});
+	reg_scalar(ScalarFunction("url_hash", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHashFunction), {"url"},
+	           "Get the hash/fragment component of a URL.", {"url_hash('https://example.com#section')"});
+	reg_scalar(ScalarFunction("url_username", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlUsernameFunction),
+	           {"url"}, "Get the username component of a URL.", {"url_username('https://user:pass@example.com')"});
+	reg_scalar(ScalarFunction("url_password", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlPasswordFunction),
+	           {"url"}, "Get the password component of a URL.", {"url_password('https://user:pass@example.com')"});
+	reg_scalar(ScalarFunction("url_origin", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlOriginFunction), {"url"},
+	           "Get the origin (scheme + host) of a URL.", {"url_origin('https://example.com/path')"});
+	reg_scalar(ScalarFunction("url_href", {LogicalType::VARCHAR}, LogicalType::VARCHAR, UrlHrefFunction), {"url"},
+	           "Get the normalized full href of a URL.", {"url_href('https://example.com/path')"});
+	reg_scalar(ScalarFunction("url_valid", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, UrlValidFunction), {"url"},
+	           "Check if a URL string is valid.", {"url_valid('https://example.com')"});
 
 	//--------------------------------------------------------------------------
 	// Query Parameter Functions
 	//--------------------------------------------------------------------------
 
-	// url_search_params(url) -> MAP
-	loader.RegisterFunction(ScalarFunction("url_search_params", {LogicalType::VARCHAR},
-	                                       LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR),
-	                                       UrlSearchParamsFunction));
+	reg_scalar(ScalarFunction("url_search_params", {LogicalType::VARCHAR},
+	                          LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR), UrlSearchParamsFunction),
+	           {"url"}, "Extract all query search parameters from a URL as a MAP.",
+	           {"url_search_params('https://example.com?a=1&b=2')"});
 
-	// url_search_param(url, name) -> VARCHAR
-	loader.RegisterFunction(ScalarFunction("url_search_param", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                       LogicalType::VARCHAR, UrlSearchParamFunction));
+	reg_scalar(ScalarFunction("url_search_param", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                          UrlSearchParamFunction),
+	           {"url", "name"}, "Extract the value of a specific query parameter from a URL.",
+	           {"url_search_param('https://example.com?a=1&b=2', 'a')"});
 
 	//--------------------------------------------------------------------------
 	// URL Resolution
 	//--------------------------------------------------------------------------
 
-	// url_resolve(base, relative) -> VARCHAR
-	loader.RegisterFunction(ScalarFunction("url_resolve", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                       LogicalType::VARCHAR, UrlResolveFunction));
+	reg_scalar(ScalarFunction("url_resolve", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                          UrlResolveFunction),
+	           {"base", "relative"}, "Resolve a relative URL against a base URL.",
+	           {"url_resolve('https://example.com/dir/', '../other')"});
 
 	//--------------------------------------------------------------------------
 	// URL Building and Modification
@@ -1906,20 +2020,18 @@ static void LoadInternal(ExtensionLoader &loader) {
 	url_build_func.SetBindCallback(CompatScalarBind<UrlBuildBindBody>);
 	CompatSetVarArgs(url_build_func, LogicalType::ANY);
 	url_build_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	// Named parameters come from the argument aliases; v2.0 stopped capturing those
-	// by default.
 	CompatCaptureArgumentAliases(url_build_func);
-	loader.RegisterFunction(url_build_func);
+	reg_scalar(url_build_func, {"options"}, "Build a URL string from named component parameters.",
+	           {"url_build(protocol := 'https', hostname := 'example.com', pathname := '/api')"});
 
 	// url_modify(url, protocol := ..., hostname := ..., ...) -> VARCHAR
 	auto url_modify_func = ScalarFunction("url_modify", {}, LogicalType::VARCHAR, UrlModifyFunction);
 	url_modify_func.SetBindCallback(CompatScalarBind<UrlModifyBindBody>);
 	CompatSetVarArgs(url_modify_func, LogicalType::ANY);
 	url_modify_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	// Named parameters come from the argument aliases; v2.0 stopped capturing those
-	// by default.
 	CompatCaptureArgumentAliases(url_modify_func);
-	loader.RegisterFunction(url_modify_func);
+	reg_scalar(url_modify_func, {"url", "options"}, "Modify components of an existing URL string.",
+	           {"url_modify('https://example.com/api', pathname := '/v2')"});
 }
 
 void UrlpatternExtension::Load(ExtensionLoader &loader) {
