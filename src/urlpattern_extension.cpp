@@ -1508,6 +1508,8 @@ static unique_ptr<FunctionData> UrlModifyBindBody(vector<unique_ptr<Expression>>
 // Core URL building logic used by both url_build and url_modify
 static void UrlBuildCore(DataChunk &args, ExpressionState &state, Vector &result, bool is_modify) {
 	auto &bind_data = CompatBindInfo(state.expr.Cast<BoundFunctionExpression>()).Cast<UrlBuildBindData>();
+	// Arguments arrive as constant or dictionary vectors as well as flat ones; the per-row reads below assume flat.
+	args.Flatten();
 
 	// Helper to get optional string from argument
 	auto get_optional_string = [&](idx_t param_idx, idx_t row_idx) -> std::optional<std::string> {

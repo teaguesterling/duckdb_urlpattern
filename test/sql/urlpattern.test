@@ -995,3 +995,13 @@ query I
 SELECT urlpattern_extract(urlpattern_init(pathname := '/x;y;:id'), 'https://example.com/x;y;42', 'id');
 ----
 42
+
+# url_build with a column argument next to a constant one (the constant used to be read past its end)
+statement ok
+CREATE TABLE hosts AS SELECT 'a.com' AS hostname UNION ALL SELECT 'b.com' AS hostname;
+
+query I
+SELECT url_build(protocol := 'https', hostname := hostname) FROM hosts ORDER BY 1;
+----
+https://a.com/
+https://b.com/
