@@ -28,36 +28,87 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # THE NEXT-LINE BUILD: the v2.0 RELEASE branch, not `main`. One canary line for
-  # the whole fleet, and the branch v2.0.0 is cut from. Pinning the release branch
-  # is what makes a red run actionable -- `main` moves underneath the job, so a
-  # failure there cannot be told apart from upstream churn.
+  # THE NEXT LINE RESOLVES, IT DOES NOT PIN. Beyond the shipping v2.0.0 tag the
+  # v2.0 line is the `v2.0-cyanoptera` BRANCH, and ci-tools builds it against a
+  # PREBUILT libduckdb downloaded from duckdb-staging. That prebuilt reports a
+  # concrete staged version, so passing the branch NAME as duckdb_version -- what
+  # this leg did until now -- stamps "v2.0-cyanoptera" into the extension's
+  # metadata, the loader then refuses the file, and every `require urlpattern`
+  # fails. Measured elsewhere in the fleet, not guessed: duck_tails PR #72 run
+  # 40212481885, and the same finding is why plinking_duck #73 moved to the shape
+  # below.
   #
-  # It runs on pull requests as well as pushes to main, because what it checks is a
-  # property of the CHANGE, not of upstream drift. duckdb/community-extensions
+  # So resolve first, then build. Two things are resolved, for two different
+  # reasons:
+  #   * the tip's HEX SHA, via `git ls-remote`. DuckDB's CMake requires it --
+  #     GIT_COMMIT_HASH must match ^[a-fA-F0-9]+$ with length 10-64, else
+  #     FATAL_ERROR "Invalid DuckDB commit". A ref name there is fatal.
+  #   * the STAGED VERSION, via latest_alpha_version.txt for that commit,
+  #     validated against the same pattern ci_phase.py uses. The hard fail is the
+  #     point: a value outside that pattern is what triggers ci-tools' staged
+  #     prebuilt substitution and stamps a mismatched version, so this closes the
+  #     defect by construction rather than by vigilance.
+  #
+  # This replaces a pinned DUCKDB_NEXT/DUCKDB_NEXT_COMMIT pair rather than adding
+  # one: a pin needs a manual bump every time the tip moves, and a stale pin
+  # measures drift on a commit nobody ships rather than on the 2.0 line.
+  #
+  # It runs on pull requests as well as pushes to main, because what it checks is
+  # a property of the CHANGE, not of upstream drift. duckdb/community-extensions
   # builds every release against the v2.0 line with no per-extension opt-out, so a
   # break here is a red check on every release -- which is why this is a gate and
   # not advisory.
   #
-  # vcpkg_commit is the baseline the REGISTRY uses for this line, not the one the
-  # v1.5 legs use: community-extensions/.github/workflows/build.yml resolves
-  # COMMUNITY_EXTENSION_VCPKG_COMMIT to 84bab45d... only when duckdb_version is
-  # v1.5.6, and to cd61e1e2... otherwise. Matching it here means ada-url resolves
-  # the same way locally as it will when the descriptor is built.
-  #
   # `if` rather than `continue-on-error`: a job calling a REUSABLE WORKFLOW accepts
   # only name/needs/if/permissions/uses/with/secrets/strategy/concurrency, and
   # adding continue-on-error makes the whole workflow fail to PARSE (zero jobs
-  # scheduled, run marked failed).
-  duckdb-next-build:
-    name: Next-line build — DuckDB v2.0
+  # scheduled, run marked failed). The `if` lives on the resolver, which is a
+  # plain job; duckdb-next-build `needs` it and so is skipped along with it.
+  duckdb-next-ref:
+    name: Next-line build — resolve DuckDB v2.0
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        run: |
+          commit=$(git ls-remote https://github.com/duckdb/duckdb.git refs/heads/v2.0-cyanoptera | cut -f1)
+          [ -n "$commit" ] || { echo "::error::could not resolve duckdb v2.0-cyanoptera"; exit 1; }
+          version=$(curl -sSfL "https://duckdb-staging.duckdb.org/${commit:0:10}/latest_alpha_version.txt" | tr -d '[:space:]') || version=
+          if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|rc|dev)[0-9]+)?$ ]]; then
+            echo "::error::no staged DuckDB version for v2.0-cyanoptera at $commit (got '$version')"
+            exit 1
+          fi
+          echo "v2.0-cyanoptera -> $commit, version $version"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  duckdb-next-build:
+    name: Next-line build — DuckDB v2.0 (cyanoptera)
+    needs: duckdb-next-ref
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
-      duckdb_version: v2.0-cyanoptera
+      duckdb_version: ${{ needs.duckdb-next-ref.outputs.version }}
+      duckdb_commit: ${{ needs.duckdb-next-ref.outputs.commit }}
       ci_tools_version: main
       extension_name: urlpattern
-      vcpkg_commit: 'cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3'
+      # The vcpkg baseline the REGISTRY uses for urlpattern, on EVERY line, which
+      # is why all four legs here carry the same one.
+      #
+      # Corrected 2026-10-25: this leg previously carried cd61e1e2 under a comment
+      # claiming that is what the registry resolves for the 2.0 line. That is true
+      # of extensions generally and false of this one. build.yml reaches its
+      # `v1.5.6 -> 84bab45d, else -> cd61e1e2` conditional only when the
+      # descriptor leaves vcpkg_commit EMPTY, and
+      # extensions/urlpattern/description.yml sets
+      # vcpkg_commit: "68a1c387f660632f2f65cdb7e8cd093a08840e5d", so the
+      # conditional is never reached for urlpattern. 68a1c387 is therefore what
+      # the registry uses for this extension, on the 2.0 line as on the others.
+      # (Measured from the descriptor as it stands today, not from the descriptor
+      # as it stood when any particular artifact was built.)
+      vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
       # Same exclusions as the other legs, and for the same upstream reasons:
       # windows_amd64_mingw -- rtools42 mingw-g++ libstdc++ cannot compile ada-url
       #   3.3.0 (non-constexpr string->string_view in url-inl.h:47)
@@ -70,8 +121,10 @@ jobs:
       # `--require urlpattern` turns "could not load" into `require urlpattern: FAILED`
       # instead of a silent skip. Verified on ci-tools main against b15358c371d:
       # present -> exit 0 "16 passed, 2 skipped"; hidden -> exit 2 "0 passed, 18 failed".
-      # Needs a ci_tools_version that HAS `T` (main / v2.0-cyanoptera); on
-      # v1.5-variegata the variable is silently ignored -- hence `make test-require`.
+      # Needs a ci_tools_version that HAS `T`. Measured 2026-10-25: `T ?=` is at
+      # makefiles/duckdb_extension.Makefile:204 on ci-tools main and on
+      # v2.0-cyanoptera, and does not exist on v1.5-variegata -- which is why the
+      # variegata leg below carries no guard.
       test_config: '{"test_env_variables": {"T": "--test-flags \"--require urlpattern\" \"test/*\""}}'
   # Advisory canary against duckdb `main`, which is AHEAD of the v2.0 release
   # branch. Kept as its own job rather than merged into the one above: this one may
@@ -88,20 +141,64 @@ jobs:
       vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
       exclude_archs: 'windows_amd64_mingw;wasm_threads;wasm_eh;wasm_mvp'
 
-  # Stable leg: the merge gate. The submodule pointer tracks the v1.5-variegata
-  # branch tip, but we BUILD against the v1.5.4 release tag: branch-tip builds
-  # emit non-loadable `-dev` extensions, whereas the tagged release produces
-  # loadable artifacts and matches the prebuilt v1.5.4 CLI used for tests.
+  # THE SHIPPING LINE, and the merge gate. This is the registry's own default:
+  # community-extensions/.github/workflows/build.yml defaults duckdb_version to
+  # v2.0.0, duckdb_commit to d54cbbe3df17e8e5ce68312f483b4155836112aa and
+  # ci_tools_version to v2.0-cyanoptera (read 2026-10-25), and the duckdb
+  # submodule gitlink is pinned at exactly that commit. So a local build and the
+  # served artifact carry the same DuckDB, and extensions built in sibling repos
+  # can co-load -- the extension ABI is exact-version.
+  #
+  # Promoted from v1.5.4 on 2026-10-25. duckdb_commit selects the CHECKOUT while
+  # duckdb_version is what the extension's metadata STAMPS, so duckdb_version has
+  # to stay the short release-shaped string: a bare 40-char sha there makes every
+  # `require urlpattern` fail (duckdb/community-extensions#3086). d54cbbe3df is
+  # the commit tag v2.0.0 points at, verified by rev-parse rather than by reading
+  # the tag name.
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      duckdb_version: v1.5.4
-      ci_tools_version: v1.5-variegata
+      duckdb_version: v2.0.0
+      duckdb_commit: d54cbbe3df17e8e5ce68312f483b4155836112aa
+      ci_tools_version: v2.0-cyanoptera
       extension_name: urlpattern
       vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
       # Windows MSVC (windows_amd64) re-enabled and green.
       # Exclude windows_amd64_mingw: rtools42 mingw-g++ libstdc++ can't compile
       #   ada-url 3.3.0 (non-constexpr string->string_view in url-inl.h:47)
       # Exclude WASM: emscripten clang 20.0 still crashes (SIGSEGV) on ada-url C++20 templates
+      exclude_archs: 'windows_amd64_mingw;wasm_threads;wasm_eh;wasm_mvp'
+      # The same `--require` guard as the next leg, and for the same reason: this
+      # leg now RUNS the tests, and without the guard a failed extension load
+      # reports green at `0 passed, N skipped`. ci-tools v2.0-cyanoptera has `T`
+      # (duckdb_extension.Makefile:204, measured 2026-10-25).
+      test_config: '{"test_env_variables": {"T": "--test-flags \"--require urlpattern\" \"test/*\""}}'
+
+  # THE v1.5 VARIANT the registry still builds. community-extensions'
+  # scripts/build.py routes DUCKDB_VERSION v1.5.6 -- and only v1.5.6 -- to each
+  # descriptor's `variegata` ref (lines 46-48, read 2026-10-25). v1.5.4, which
+  # this repo shipped as its stable leg until now, is a version the registry
+  # builds nothing for, so the leg follows the registry to v1.5.6 and to the rest
+  # of the fleet (duck_tails and plinking_duck main both ship v1.5.6 here).
+  #
+  # The v1.5.6 RELEASE TAG, not the branch tip: branch-tip builds emit
+  # non-loadable `-dev` extensions, whereas the tagged release produces loadable
+  # artifacts. The reusable workflow repoints DuckDB itself
+  # (`DUCKDB_GIT_VERSION=... make set_duckdb_version`), so this job builds the
+  # v1.5.6 tag even though the submodule gitlink is now the v2.0.0 commit.
+  #
+  # NO `--require` guard here, and that is not an oversight. Measured 2026-10-25:
+  # `T ?=` does not exist in makefiles/duckdb_extension.Makefile on ci-tools
+  # v1.5-variegata (it is at line 204 on main and on v2.0-cyanoptera), so
+  # test_env_variables would be accepted and then silently ignored -- a guard
+  # that looks present and gates nothing, which is worse than its absence.
+  duckdb-variegata-build:
+    name: Build extension binaries (DuckDB v1.5 variant)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
+    with:
+      duckdb_version: v1.5.6
+      ci_tools_version: v1.5-variegata
+      extension_name: urlpattern
+      vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
       exclude_archs: 'windows_amd64_mingw;wasm_threads;wasm_eh;wasm_mvp'
