@@ -43,11 +43,35 @@ jobs:
   #   * the tip's HEX SHA, via `git ls-remote`. DuckDB's CMake requires it --
   #     GIT_COMMIT_HASH must match ^[a-fA-F0-9]+$ with length 10-64, else
   #     FATAL_ERROR "Invalid DuckDB commit". A ref name there is fatal.
-  #   * the STAGED VERSION, via latest_alpha_version.txt for that commit,
-  #     validated against the same pattern ci_phase.py uses. The hard fail is the
-  #     point: a value outside that pattern is what triggers ci-tools' staged
-  #     prebuilt substitution and stamps a mismatched version, so this closes the
-  #     defect by construction rather than by vigilance.
+  #   * the STAGED VERSION, via latest_alpha_version.txt, validated against the
+  #     same pattern ci_phase.py uses. The hard fail on a BAD value is the point:
+  #     a value outside that pattern is what triggers ci-tools' staged prebuilt
+  #     substitution and stamps a mismatched version, so this closes the defect
+  #     by construction rather than by vigilance.
+  #
+  # IT WALKS BACK, because staging does not build every commit. Reading
+  # latest_alpha_version.txt for the TIP ONLY -- what this job did until now --
+  # turns an upstream staging gap into a red gate on an unrelated PR. Measured on
+  # PR #20, run 41103463932:
+  #
+  #   ::error::no staged DuckDB version for v2.0-cyanoptera at
+  #            910c73dabeafc0290907a0c37e09f6abed8e9446 (got '')
+  #
+  # and, checked directly at the same time,
+  # duckdb-staging.duckdb.org/910c73dabe/latest_alpha_version.txt returns HTTP
+  # 404. Nothing about that PR caused it: this job's script was byte-identical to
+  # main's, and this repo's previous main run passed on 2026-10-26 only because
+  # staging happened to hold that tip. A MISSING staged build is an upstream
+  # schedule, not a defect in our change, so it must not be fatal -- while a
+  # MALFORMED version string still must be.
+  #
+  # So: clone the last DEPTH commits of the branch and take the newest one that
+  # staging actually has, reporting how far back that was. The walk-back is not
+  # new work; it is the shape already running in 7 sibling repos (duck_tails,
+  # mcp, webbed, read_lines, scalarfs, yaml, plinking_duck, duck_block_utils).
+  # This repo was the only one with this resolver and without it. --filter
+  # blob:none is right HERE, unlike the main canary's resolver: this walk needs
+  # commit metadata only, never a file out of a tree and never rev-list --count.
   #
   # This replaces a pinned DUCKDB_NEXT/DUCKDB_NEXT_COMMIT pair rather than adding
   # one: a pin needs a manual bump every time the tip moves, and a stale pin
@@ -73,15 +97,36 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
       - id: resolve
+        shell: bash
         run: |
-          commit=$(git ls-remote https://github.com/duckdb/duckdb.git refs/heads/v2.0-cyanoptera | cut -f1)
-          [ -n "$commit" ] || { echo "::error::could not resolve duckdb v2.0-cyanoptera"; exit 1; }
-          version=$(curl -sSfL "https://duckdb-staging.duckdb.org/${commit:0:10}/latest_alpha_version.txt" | tr -d '[:space:]') || version=
-          if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|rc|dev)[0-9]+)?$ ]]; then
-            echo "::error::no staged DuckDB version for v2.0-cyanoptera at $commit (got '$version')"
+          set -euo pipefail
+          DEPTH=150
+          tip=$(git ls-remote https://github.com/duckdb/duckdb.git refs/heads/v2.0-cyanoptera | cut -f1)
+          [ -n "$tip" ] || { echo "::error::could not resolve duckdb v2.0-cyanoptera"; exit 1; }
+
+          tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+          git clone --quiet --filter=blob:none --no-checkout --depth "$DEPTH" \
+              --branch v2.0-cyanoptera https://github.com/duckdb/duckdb.git "$tmp/duckdb"
+
+          commit=""; version=""; behind=0
+          for sha in $(git -C "$tmp/duckdb" log --format=%H -n "$DEPTH"); do
+            v=$(curl -sSfL "https://duckdb-staging.duckdb.org/${sha:0:10}/latest_alpha_version.txt" 2>/dev/null | tr -d '[:space:]') || { behind=$((behind+1)); continue; }
+            if [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|rc|dev)[0-9]+)?$ ]]; then
+              commit="$sha"; version="$v"; break
+            fi
+            behind=$((behind+1))
+          done
+
+          if [ -z "$commit" ]; then
+            echo "::error::no staged DuckDB build for v2.0-cyanoptera in its last $DEPTH commits (tip $tip)"
             exit 1
           fi
-          echo "v2.0-cyanoptera -> $commit, version $version"
+
+          echo "v2.0-cyanoptera tip is $tip"
+          echo "resolved $commit, version $version ($behind commit(s) behind the tip)"
+          if [ "$behind" -gt 0 ]; then
+            echo "::notice::the v2.0-cyanoptera tip ($tip) has no staged build; using $commit ($version), $behind commit(s) back"
+          fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
