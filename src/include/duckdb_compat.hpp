@@ -213,7 +213,8 @@ inline const FunctionData &CompatBindInfo(const EXPR &expr) {
 //     AddKwargs(name, type)  -> VAR_KEYWORD,    "**kwargs" -- receives every named
 //                               argument that matches no other parameter
 // and the names stop being aliases: the binder passes them to the bind callback via
-// BindFunctionInput::GetArgumentNames(), and ONLY if the function opts in with
+// BindFunctionInput (GetArgumentNames() on v2.0, GetArgumentName(idx) on main),
+// and ONLY if the function opts in with
 // FunctionProperties::requires_expression_names.
 //
 // Which kind a function wants is a semantic choice, not a mechanical rename, and
@@ -329,11 +330,11 @@ inline auto BindArguments(INPUT &input) -> decltype(input.GetArguments()) {
 //!
 //! This exists because the NAMES moved while the arguments did not. On v1.5 a named
 //! argument's name is an alias on the bound child, readable with GetAlias(); on v2.0
-//! aliases are empty and the binder supplies names through
-//! BindFunctionInput::GetArgumentNames(). That is a SILENT runtime difference -- a
-//! bind body that reads GetAlias() compiles on v2.0 and then sees every argument as
-//! positional -- so the two sources are resolved here, once, and every bind body
-//! reads this one list.
+//! and later aliases are empty and the binder supplies names through
+//! BindFunctionInput -- GetArgumentNames() on v2.0, GetArgumentName(idx) on main.
+//! That is a SILENT runtime difference -- a bind body that reads GetAlias() compiles
+//! on v2.0 and then sees every argument as positional -- so all THREE sources are
+//! resolved here, once, and every bind body reads this one list.
 using compat_arg_names_t = vector<string>;
 
 namespace compat_bind_detail {
@@ -372,6 +373,42 @@ inline auto BindArgumentNames(INPUT &input) -> decltype(input.GetArgumentNames()
 		if (name != CompatVarArgsName) {
 			names[i] = name;
 		}
+	}
+	return names;
+}
+
+// duckdb main (v2.1-bound) shape. SFINAE-constrained on the INDEXED accessor, so
+// it is never considered on v1.5 or on v2.0.
+//
+// main replaced the bulk accessor with a per-argument one:
+//     v2.0  optional_ptr<const vector<Identifier>> GetArgumentNames() const
+//     main  const Identifier &GetArgumentName(idx_t arg_idx) const
+// (duckdb src/include/duckdb/function/function.hpp:700 on v2.0-cyanoptera and
+// :713 on main, read 2026-10-30.) Found by this repo's main canary, run
+// 41115557061: without this overload the v2.0 template drops out of the overload
+// set and CompatScalarBind below has no viable BindArgumentNames to call.
+//
+// Two differences from the v2.0 overload, both taken from upstream's own doc
+// comment and not guessed:
+//   * there is no "names unavailable" case. Every index has a name, so the
+//     optional_ptr check above has no counterpart here.
+//   * "*args" ALREADY reads as an empty name upstream, so the CompatVarArgsName
+//     normalisation the v2.0 overload needs is not needed and is not repeated.
+//     Upstream: "the parameter name for standard and keyword-only parameters, the
+//     name the caller wrote for **kwargs, and an empty name for *args".
+//
+// The two templates are mutually exclusive BY CONSTRUCTION: v2.0 has only the bulk
+// accessor, main has only the indexed one. They take the same parameter list and
+// differ only in their trailing return type, so partial ordering cannot separate
+// them -- if some future duckdb ever carries BOTH, this call becomes an AMBIGUITY
+// error rather than silently picking one. That is the loud failure we want, and
+// the fix then is to delete the overload for the line we no longer build.
+template <class INPUT>
+inline auto BindArgumentNames(INPUT &input) -> decltype(input.GetArgumentName(idx_t(0)), compat_arg_names_t()) {
+	auto &arguments = input.GetArguments();
+	compat_arg_names_t names(arguments.size());
+	for (idx_t i = 0; i < names.size(); i++) {
+		names[i] = input.GetArgumentName(i).GetIdentifierName();
 	}
 	return names;
 }
