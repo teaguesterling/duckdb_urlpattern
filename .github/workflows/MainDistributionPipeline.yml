@@ -126,20 +126,97 @@ jobs:
       # v2.0-cyanoptera, and does not exist on v1.5-variegata -- which is why the
       # variegata leg below carries no guard.
       test_config: '{"test_env_variables": {"T": "--test-flags \"--require urlpattern\" \"test/*\""}}'
+  # THE MAIN CANARY RESOLVES TOO, for the same reason the next line does, and it
+  # was measured hollow before this change. `duckdb_version: main` is also the
+  # checkout ref, so the engine stamps NormalizeVersionTag("main") = "vmain". A
+  # version string with no pre-release suffix is treated as a RELEASE, the stamp
+  # never matches the extension's, the loader refuses the file, and every test
+  # SKIPS at its require line while the leg reports success.
+  #
+  # Measured on this repo, run 40249118501 (001c202), all three legs green:
+  #
+  #   -- git hash 1641475ef1, version main, extension folder main
+  #   0 passed, 1 skipped in 0s
+  #
+  # The shipping leg of that same run read `1 passed, 0 skipped`, and
+  # `git ls-tree origin/main -- test` finds exactly one .test file. So the bar
+  # after this change is `1 passed, 0 skipped` on each canary leg.
+  #
+  # Passing `duckdb_commit: main` does not help: DuckDB's CMake requires
+  # ^[a-fA-F0-9]+$ of length 10-64 and fails at configure with
+  # "Invalid DuckDB commit 'main'".
+  #
+  # So resolve main's tip per run to a (hex commit, dev version) pair. The leg
+  # still follows main; it stops lying about which commit it followed. The
+  # version is computed the way duckdb's own CMake does for a dev build,
+  # v<scripts/ci/release_version.txt>.0-dev<git rev-list --count HEAD>. The
+  # `-dev` suffix does two jobs: NormalizeVersionTag stops treating the string
+  # as a release, and the string stays inside ci_phase.py's
+  # STAGED_DUCKDB_VERSION_PATTERN so no staged version is substituted.
+  #
+  # --filter=tree:0, NOT blob:none: `rev-list --count` needs the whole commit
+  # history. Only the trees are skippable.
+  #
+  # Verified elsewhere in the fleet before being applied here: duckdb_scalarfs
+  # 6271b22, and plinking_duck run 41091436280, where all three canary legs
+  # stamp `extension folder 2370935b7f` -- the COMMIT, which is duckdb's `-dev`
+  # normalisation branch -- at 98 passed, 0 skipped.
+  duckdb-main-ref:
+    name: Canary build — resolve DuckDB main
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+          # Commits only: rev-list --count needs the whole history, not its trees.
+          git clone --quiet --filter=tree:0 --no-checkout --single-branch --branch main \
+              https://github.com/duckdb/duckdb.git "$tmp/duckdb"
+          commit=$(git -C "$tmp/duckdb" rev-parse HEAD)
+          release=$(git -C "$tmp/duckdb" show HEAD:scripts/ci/release_version.txt | tr -d '[:space:]')
+          count=$(git -C "$tmp/duckdb" rev-list --count HEAD)
+          version="v${release}.0-dev${count}"
+          if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.0-dev[0-9]+$ ]]; then
+            echo "::error::could not build a dev version for duckdb main at $commit (got '$version')"
+            exit 1
+          fi
+          echo "duckdb main -> $commit, version $version"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   # Advisory canary against duckdb `main`, which is AHEAD of the v2.0 release
   # branch. Kept as its own job rather than merged into the one above: this one may
   # legitimately be red on churn that will never reach v2.0.0, so it stays gated to
   # dispatch and pushes to main and never enters a PR's check rollup.
+  #
+  # The `if` is on duckdb-main-ref above, not here: a job calling a REUSABLE
+  # workflow accepts only name/needs/if/permissions/uses/with/secrets/strategy/
+  # concurrency, and `needs` makes this leg skip whenever the resolver skips.
+  # One consequence: this leg CANNOT run on a pull request, so a PR can never
+  # show the fix working. The proof is the next push to main.
   duckdb-main-canary:
     name: Canary build — DuckDB main (advisory)
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: duckdb-main-ref
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
-      duckdb_version: main
+      duckdb_version: ${{ needs.duckdb-main-ref.outputs.version }}
+      duckdb_commit: ${{ needs.duckdb-main-ref.outputs.commit }}
       ci_tools_version: main
       extension_name: urlpattern
       vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
       exclude_archs: 'windows_amd64_mingw;wasm_threads;wasm_eh;wasm_mvp'
+
+      # Without this the fix is unmeasurable: the leg reports success whether or
+      # not anything loaded, which is exactly the state above. `--require
+      # urlpattern` turns "could not load" into `require urlpattern: FAILED`
+      # instead of a silent skip. Same guard, same reasoning and same ci-tools
+      # requirement as the next-line leg above.
+      test_config: '{"test_env_variables": {"T": "--test-flags \"--require urlpattern\" \"test/*\""}}'
 
   # THE SHIPPING LINE, and the merge gate. This is the registry's own default:
   # community-extensions/.github/workflows/build.yml defaults duckdb_version to
