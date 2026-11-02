@@ -297,30 +297,3 @@ jobs:
       # (duckdb_extension.Makefile:204, measured 2026-10-25).
       test_config: '{"test_env_variables": {"T": "--test-flags \"--require urlpattern\" \"test/*\""}}'
 
-  # THE v1.5 VARIANT the registry still builds. community-extensions'
-  # scripts/build.py routes DUCKDB_VERSION v1.5.6 -- and only v1.5.6 -- to each
-  # descriptor's `variegata` ref (lines 46-48, read 2026-10-25). v1.5.4, which
-  # this repo shipped as its stable leg until now, is a version the registry
-  # builds nothing for, so the leg follows the registry to v1.5.6 and to the rest
-  # of the fleet (duck_tails and plinking_duck main both ship v1.5.6 here).
-  #
-  # The v1.5.6 RELEASE TAG, not the branch tip: branch-tip builds emit
-  # non-loadable `-dev` extensions, whereas the tagged release produces loadable
-  # artifacts. The reusable workflow repoints DuckDB itself
-  # (`DUCKDB_GIT_VERSION=... make set_duckdb_version`), so this job builds the
-  # v1.5.6 tag even though the submodule gitlink is now the v2.0.0 commit.
-  #
-  # NO `--require` guard here, and that is not an oversight. Measured 2026-10-25:
-  # `T ?=` does not exist in makefiles/duckdb_extension.Makefile on ci-tools
-  # v1.5-variegata (it is at line 204 on main and on v2.0-cyanoptera), so
-  # test_env_variables would be accepted and then silently ignored -- a guard
-  # that looks present and gates nothing, which is worse than its absence.
-  duckdb-variegata-build:
-    name: Build extension binaries (DuckDB v1.5 variant)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
-    with:
-      duckdb_version: v1.5.6
-      ci_tools_version: v1.5-variegata
-      extension_name: urlpattern
-      vcpkg_commit: '68a1c387f660632f2f65cdb7e8cd093a08840e5d'
-      exclude_archs: 'windows_amd64_mingw;wasm_threads;wasm_eh;wasm_mvp'
